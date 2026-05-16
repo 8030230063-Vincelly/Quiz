@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { createServer } from 'vite';
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 
@@ -13,21 +12,12 @@ const PORT = 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-const isBotConfigured = BOT_TOKEN && BOT_TOKEN !== 'YOUR_TELEGRAM_BOT_TOKEN';
+const isBotConfigured = !!(BOT_TOKEN && BOT_TOKEN !== 'YOUR_TELEGRAM_BOT_TOKEN');
 
-// Mock IoT State
+// Mock IoT State (Note: Memory resets on Serverless Vercel)
 let iotState = {
-  relays: {
-    1: false,
-    2: false,
-    3: false,
-    4: false
-  },
-  dht: {
-    temp: 24,
-    humidity: 60,
-    lastUpdate: new Date()
-  },
+  relays: { 1: false, 2: false, 3: false, 4: false },
+  dht: { temp: 24, humidity: 60, lastUpdate: new Date() },
   espConnected: true,
   logs: [] as any[],
   telegramLogs: [] as any[],
@@ -36,7 +26,7 @@ let iotState = {
 
 // Initialize Telegram Bot if token exists
 let bot: TelegramBot | null = null;
-if (isBotConfigured) {
+if (isBotConfigured && process.env.NODE_ENV !== 'test') {
   try {
     bot = new TelegramBot(BOT_TOKEN as string, { polling: true });
     iotState.botStatus = 'online';
@@ -51,37 +41,23 @@ if (isBotConfigured) {
       if (iotState.telegramLogs.length > 50) iotState.telegramLogs.pop();
 
       if (text === '/start') {
-        bot?.sendMessage(msg.chat.id, 'Welcome to SmartHome IoT Bot! Use buttons to control your home.');
+        bot?.sendMessage(msg.chat.id, 'Welcome to SmartHome IoT Bot!');
       }
     });
-
-    console.log('Telegram Bot connected');
   } catch (err) {
-    console.error('Failed to initialize Telegram Bot:', err);
     iotState.botStatus = 'error';
   }
 }
 
 // Helper to add log
 const addLog = (message: string) => {
-  iotState.logs.unshift({
-    time: new Date(),
-    message
-  });
+  iotState.logs.unshift({ time: new Date(), message });
   if (iotState.logs.length > 50) iotState.logs.pop();
 };
 
-// Simulation: Randomize DHT data every few seconds (Only if no real data received in last 30s)
 let lastRealData = 0;
-setInterval(() => {
-  if (Date.now() - lastRealData > 30000 && iotState.espConnected) {
-    iotState.dht.temp = Number((20 + Math.random() * 10).toFixed(1));
-    iotState.dht.humidity = Number((40 + Math.random() * 40).toFixed(1));
-    iotState.dht.lastUpdate = new Date();
-  }
-}, 3000);
 
-// ESP32 Update Endpoint
+// API Endpoints
 app.post('/api/update-sensor', express.json(), (req, res) => {
   const { temp, humidity } = req.body;
   if (temp !== undefined && humidity !== undefined) {
@@ -96,12 +72,11 @@ app.post('/api/update-sensor', express.json(), (req, res) => {
   }
 });
 
-// API Endpoints
 app.get('/api/dht', (req, res) => {
   res.json({
     status: 'ok',
     data: iotState.dht,
-    espConnected: (Date.now() - lastRealData < 60000), // Anggap online jika ada data dalam 1 menit terakhir
+    espConnected: (Date.now() - lastRealData < 60000) || (process.env.NODE_ENV !== 'production'),
     botStatus: isBotConfigured ? iotState.botStatus : 'unconfigured'
   });
 });
@@ -144,34 +119,38 @@ app.get('/api/logs', (req, res) => {
   });
 });
 
-// Root API path helper
 app.get('/api', (req, res) => {
   res.json({ status: 'API is running' });
 });
 
-// Explicitly handle 404 for API
-app.all('/api/*', (req, res) => {
-  res.status(404).json({ error: 'API route not found' });
-});
-
-// IMPORTANT: Do NOT use app.listen in Vercel production
-// Export the Express app for Vercel's serverless handler
-export default app;
-
-async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-    
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Development server running on http://localhost:${PORT}`);
-    });
-  }
+// Production: Serve static files from root for standard Vercel deployments
+// (If not caught by rewrites)
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  app.use(express.static(distPath));
 }
 
+// Export for Vercel
+export default app;
+
+// Local Development
 if (process.env.NODE_ENV !== 'production') {
-  startServer();
+  const startDev = async () => {
+    try {
+      const { createServer } = await import('vite');
+      const vite = await createServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+      
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Dev: http://localhost:${PORT}`);
+      });
+    } catch (e) {
+      console.error(e);
+      app.listen(PORT);
+    }
+  };
+  startDev();
 }
