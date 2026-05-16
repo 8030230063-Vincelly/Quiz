@@ -8,8 +8,8 @@ const char* ssid = "NAMA_WIFI_ANDA";
 const char* password = "PASSWORD_WIFI_ANDA";
 
 // --- KONFIGURASI BACKEND ---
-// Jika deploy ke Vercel, ganti dengan URL Vercel Anda (misal: https://quiz-umber-rho.vercel.app)
-const char* serverUrl = "https://ais-pre-tt5eohrymap33mccj2v5op-817384740536.asia-east1.run.app";
+// Ganti dengan URL Vercel Anda (Sesuai Dashboard Vercel)
+const char* serverUrl = "https://quiz-umber-rho.vercel.app";
 
 // --- KONFIGURASI PIN ---
 #define DHTPIN 4

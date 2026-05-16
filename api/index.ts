@@ -73,9 +73,15 @@ let lastRealData = 0;
 // API Router
 const api = express.Router();
 
+// Logger for API
+api.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
 api.post('/update-sensor', (req, res) => {
   const { temp, humidity } = req.body;
-  console.log('Update Data:', { temp, humidity });
+  console.log('Sensor Update:', { temp, humidity });
   if (temp !== undefined && humidity !== undefined) {
     iotState.dht.temp = temp;
     iotState.dht.humidity = humidity;
@@ -93,8 +99,8 @@ api.get('/dht', (req, res) => {
   res.json({
     status: 'ok',
     data: iotState.dht,
-    espConnected: isOnline || (process.env.NODE_ENV !== 'production'),
-    botStatus: isBotConfigured ? iotState.botStatus : 'unconfigured'
+    espConnected: isOnline,
+    botStatus: iotState.botStatus
   });
 });
 
