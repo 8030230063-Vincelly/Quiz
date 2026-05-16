@@ -280,15 +280,15 @@ export default function App() {
           <footer className="pt-6 border-t border-white/5 mt-auto">
             <div className="p-4 rounded-xl bg-white/5 space-y-3">
               {[
-                { label: 'ESP32 Node', status: connectionStatus.esp ? 'online' : 'offline', color: 'emerald' },
-                { label: 'Telegram Bot', status: connectionStatus.bot, color: connectionStatus.bot === 'online' ? 'emerald' : 'rose' },
-                { label: 'Backend API', status: connectionStatus.api ? 'online' : 'offline', color: connectionStatus.api ? 'emerald' : 'rose' },
+                { label: 'ESP32 Node', status: connectionStatus.esp ? 'online' : 'offline' },
+                { label: 'Telegram Bot', status: connectionStatus.bot },
+                { label: 'Backend API', status: connectionStatus.api ? 'online' : 'offline' },
               ].map((s, i) => (
                 <div key={i} className="flex items-center justify-between text-[11px]">
                   <span className="text-slate-500">{s.label}</span>
                   <span className={cn(
                     "flex items-center gap-1.5",
-                    s.color === 'emerald' ? "text-emerald-400" : "text-rose-400"
+                    s.status === 'online' ? "text-emerald-400" : "text-rose-400"
                   )}>
                     <span className={cn(
                       "w-1.5 h-1.5 rounded-full bg-current",

@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
+import { createServer } from 'vite';
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 
@@ -101,13 +101,12 @@ app.get('/api/dht', (req, res) => {
   res.json({
     status: 'ok',
     data: iotState.dht,
-    espConnected: iotState.espConnected,
-    botStatus: iotState.botStatus
+    espConnected: (Date.now() - lastRealData < 60000), // Anggap online jika ada data dalam 1 menit terakhir
+    botStatus: isBotConfigured ? iotState.botStatus : 'unconfigured'
   });
 });
 
 app.get('/api/dht/history', (req, res) => {
-  // Return some fake history
   const now = Date.now();
   const history = Array.from({ length: 20 }, (_, i) => ({
     time: new Date(now - (19 - i) * 60000),
@@ -126,7 +125,6 @@ app.get('/api/relay/:id/:state', (req, res) => {
     iotState.relays[relayId] = isOn;
     addLog(`Relay ${id} turned ${state}`);
     
-    // Notify Telegram if configured
     if (bot && CHAT_ID) {
       bot.sendMessage(CHAT_ID, `Alert: Relay ${id} has been turned ${state}`);
     }
@@ -146,37 +144,34 @@ app.get('/api/logs', (req, res) => {
   });
 });
 
-// Explicitly handle 404 for API to prevent falling through to Vite HTML
+// Root API path helper
+app.get('/api', (req, res) => {
+  res.json({ status: 'API is running' });
+});
+
+// Explicitly handle 404 for API
 app.all('/api/*', (req, res) => {
   res.status(404).json({ error: 'API route not found' });
 });
 
-// Server Start & Vite Integration
-export default app; // Export for Vercel
+// IMPORTANT: Do NOT use app.listen in Vercel production
+// Export the Express app for Vercel's serverless handler
+export default app;
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
+    const vite = await createServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
-  if (process.env.NODE_ENV !== 'production') {
+    
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+      console.log(`Development server running on http://localhost:${PORT}`);
     });
   }
 }
 
-// Only start the server if not in a Vercel environment
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+if (process.env.NODE_ENV !== 'production') {
   startServer();
 }
