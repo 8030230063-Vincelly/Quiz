@@ -146,15 +146,21 @@ api.get('/', (req, res) => {
   res.json({ status: 'API is running' });
 });
 
-// Handle both /api/... and /...
+// API mounting
 app.use('/api', api);
-app.use('/', api);
 
-// Production: Serve static files from root for standard Vercel deployments
-// (If not caught by rewrites)
+// Production: Serve static files from root for standard deployments
 if (process.env.NODE_ENV === 'production') {
   const distPath = path.join(process.cwd(), 'dist');
   app.use(express.static(distPath));
+  
+  // Catch-all for SPA
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) {
+      return res.status(404).json({ error: 'API route not found' });
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
 }
 
 // Export for Vercel
