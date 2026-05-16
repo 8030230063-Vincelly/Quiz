@@ -52,10 +52,37 @@ void initWiFi() {
 unsigned long lastUpdate = 0;
 const int updateInterval = 10000; // Kirim data sensor setiap 10 detik
 
+int currentSequence = 0;
+unsigned long lastSeqStep = 0;
+int seqStep = 0;
+
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
     checkRelayStatus();
     
+    // Handle Sequence Logic
+    if (currentSequence == 1) { // 1-2-3-4
+      if (millis() - lastSeqStep > 500) {
+        allRelaysOff();
+        if (seqStep == 0) digitalWrite(RELAY1_PIN, LOW);
+        else if (seqStep == 1) digitalWrite(RELAY2_PIN, LOW);
+        else if (seqStep == 2) digitalWrite(RELAY3_PIN, LOW);
+        else if (seqStep == 3) digitalWrite(RELAY4_PIN, LOW);
+        seqStep = (seqStep + 1) % 4;
+        lastSeqStep = millis();
+      }
+    } else if (currentSequence == 2) { // 4-3-2-1
+      if (millis() - lastSeqStep > 500) {
+        allRelaysOff();
+        if (seqStep == 0) digitalWrite(RELAY4_PIN, LOW);
+        else if (seqStep == 1) digitalWrite(RELAY3_PIN, LOW);
+        else if (seqStep == 2) digitalWrite(RELAY2_PIN, LOW);
+        else if (seqStep == 3) digitalWrite(RELAY1_PIN, LOW);
+        seqStep = (seqStep + 1) % 4;
+        lastSeqStep = millis();
+      }
+    }
+
     // Kirim data sensor setiap 10 detik
     if (millis() - lastUpdate > updateInterval) {
       sendSensorData();
@@ -64,6 +91,13 @@ void loop() {
   } else {
     initWiFi();
   }
+}
+
+void allRelaysOff() {
+  digitalWrite(RELAY1_PIN, HIGH);
+  digitalWrite(RELAY2_PIN, HIGH);
+  digitalWrite(RELAY3_PIN, HIGH);
+  digitalWrite(RELAY4_PIN, HIGH);
 }
 
 void checkRelayStatus() {
@@ -75,14 +109,32 @@ void checkRelayStatus() {
 
   if (httpCode == 200) {
     String payload = http.getString();
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(512);
     deserializeJson(doc, payload);
 
-    // Update Relay (Inverse Logic: false = HIGH/OFF, true = LOW/ON)
-    digitalWrite(RELAY1_PIN, doc["1"] ? LOW : HIGH);
-    digitalWrite(RELAY2_PIN, doc["2"] ? LOW : HIGH);
-    digitalWrite(RELAY3_PIN, doc["3"] ? LOW : HIGH);
-    digitalWrite(RELAY4_PIN, doc["4"] ? LOW : HIGH);
+    int newSeq = doc["sequence"] | 0;
+    
+    if (newSeq != currentSequence) {
+      currentSequence = newSeq;
+      seqStep = 0;
+      if (currentSequence == 0) {
+        // Reset to normal relay state if sequence stopped
+        JsonObject rs = doc["relays"];
+        digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
+        digitalWrite(RELAY2_PIN, rs["2"] ? LOW : HIGH);
+        digitalWrite(RELAY3_PIN, rs["3"] ? LOW : HIGH);
+        digitalWrite(RELAY4_PIN, rs["4"] ? LOW : HIGH);
+      }
+    }
+
+    // Only update relays normally if no sequence is running
+    if (currentSequence == 0) {
+      JsonObject rs = doc["relays"];
+      digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
+      digitalWrite(RELAY2_PIN, rs["2"] ? LOW : HIGH);
+      digitalWrite(RELAY3_PIN, rs["3"] ? LOW : HIGH);
+      digitalWrite(RELAY4_PIN, rs["4"] ? LOW : HIGH);
+    }
   }
   http.end();
 }

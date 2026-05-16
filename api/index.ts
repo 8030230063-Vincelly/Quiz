@@ -28,6 +28,7 @@ let iotState = {
   relays: { 1: false, 2: false, 3: false, 4: false },
   dht: { temp: 24, humidity: 60, lastUpdate: new Date() },
   espConnected: false,
+  sequenceMode: 0, // 0: off, 1: 1-2-3-4, 2: 4-3-2-1
   logs: [] as any[],
   telegramLogs: [] as any[],
   botStatus: isBotConfigured ? 'online' : 'unconfigured'
@@ -136,7 +137,21 @@ api.get('/relay/:id/:state', (req, res) => {
 });
 
 api.get('/relays', (req, res) => {
-  res.json(iotState.relays);
+  res.json({
+    relays: iotState.relays,
+    sequence: iotState.sequenceMode
+  });
+});
+
+api.get('/sequence/:mode', (req, res) => {
+  const mode = parseInt(req.params.mode);
+  if ([0, 1, 2].includes(mode)) {
+    iotState.sequenceMode = mode;
+    addLog(`Sequence mode changed to: ${mode === 0 ? 'Off' : mode === 1 ? '1-2-3-4' : '4-3-2-1'}`);
+    res.json({ status: 'ok', sequence: mode });
+  } else {
+    res.status(400).json({ error: 'Invalid mode' });
+  }
 });
 
 api.get('/logs', (req, res) => {

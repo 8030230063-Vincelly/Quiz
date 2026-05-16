@@ -16,7 +16,11 @@ import {
   X,
   AlertCircle,
   ExternalLink,
-  Github
+  Github,
+  Mic,
+  MicOff,
+  RotateCw,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Line } from 'react-chartjs-2';
@@ -65,9 +69,12 @@ interface TelegramLog {
 export default function App() {
   const [dht, setDht] = useState<SensorData>({ temp: 0, humidity: 0, lastUpdate: '' });
   const [relays, setRelays] = useState<Record<number, boolean>>({ 1: false, 2: false, 3: false, 4: false });
+  const [sequenceMode, setSequenceMode] = useState(0);
   const [history, setHistory] = useState<any[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [telegramLogs, setTelegramLogs] = useState<TelegramLog[]>([]);
+  const [isListening, setIsListening] = useState(false);
+  const [voiceResult, setVoiceResult] = useState('');
   const [connectionStatus, setConnectionStatus] = useState({
     esp: false,
     api: false,
@@ -104,7 +111,8 @@ export default function App() {
         api: true
       }));
 
-      setRelays(relayData);
+      setRelays(relayData.relays);
+      setSequenceMode(relayData.sequence);
       setLogs(logData.activity);
       setTelegramLogs(logData.telegram);
 
@@ -112,6 +120,19 @@ export default function App() {
       console.error('Fetch error:', error);
       // Only set API false if it's a persistent failure
       setConnectionStatus(prev => ({ ...prev, api: false }));
+    }
+  };
+
+  const toggleSequence = async (mode: number) => {
+    const newMode = sequenceMode === mode ? 0 : mode;
+    try {
+      const res = await fetch(`/api/sequence/${newMode}`);
+      if (res.ok) {
+        setSequenceMode(newMode);
+        addNotification(`Sequence changed to: ${newMode === 0 ? 'Normal' : newMode === 1 ? '1-2-3-4' : '4-3-2-1'}`);
+      }
+    } catch (err) {
+      console.error('Sequence toggle error:', err);
     }
   };
 
@@ -148,6 +169,59 @@ export default function App() {
       }
     } catch (err) {
       console.error('Relay toggle error:', err);
+    }
+  };
+
+  const startVoiceControl = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      addNotification("Voice Recognition not supported in this browser");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript.toLowerCase();
+      setVoiceResult(transcript);
+      handleVoiceCommand(transcript);
+    };
+
+    recognition.start();
+  };
+
+  const handleVoiceCommand = (command: string) => {
+    addNotification(`Command: "${command}"`);
+    
+    // Relay Commands
+    const relayMatches = command.match(/lampu (\d+) (nyala|mati)/);
+    if (relayMatches) {
+      const id = parseInt(relayMatches[1]);
+      const action = relayMatches[2];
+      const currentState = relays[id];
+      if ((action === 'nyala' && !currentState) || (action === 'mati' && currentState)) {
+        toggleRelay(id);
+      }
+      return;
+    }
+
+    // Sequence Commands
+    if (command.includes('variasi satu') || command.includes('variasi 1')) {
+      toggleSequence(1);
+    } else if (command.includes('variasi dua') || command.includes('variasi 2')) {
+      toggleSequence(2);
+    } else if (command.includes('berhenti variasi') || command.includes('matikan variasi')) {
+      toggleSequence(0);
+    } else if (command.includes('semua lampu nyala')) {
+      [1,2,3,4].forEach(id => { if(!relays[id]) toggleRelay(id); });
+    } else if (command.includes('semua lampu mati')) {
+      [1,2,3,4].forEach(id => { if(relays[id]) toggleRelay(id); });
     }
   };
 
@@ -321,6 +395,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <button 
+              onClick={startVoiceControl}
+              className={cn(
+                "w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300",
+                isListening ? "bg-red-500 animate-pulse shadow-lg shadow-red-500/20" : "glass hover:bg-white/10"
+              )}
+            >
+              {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+            </button>
             <div className="text-right mr-4 hidden sm:block">
               <div className="text-sm font-mono text-indigo-300">{format(currentTime, 'HH:mm:ss')}</div>
               <div className="text-[10px] text-slate-500 uppercase tracking-widest">Home Station, ID</div>
@@ -381,7 +464,7 @@ export default function App() {
           </div>
 
           {/* Main Visual Area */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6 h-[400px] flex flex-col">
               <div className="flex items-center justify-between mb-8">
                 <h3 className="text-sm font-medium">Environmental History</h3>
@@ -399,16 +482,17 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 h-[400px]">
+            <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4 h-auto lg:h-[400px]">
               {[1, 2, 3, 4].map(id => (
                 <div 
                   key={id}
                   onClick={() => toggleRelay(id)}
                   className={cn(
                     "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
-                    relays[id] 
+                    relays[id] && sequenceMode === 0
                       ? "bg-indigo-500/10 border-indigo-500/30 text-white" 
-                      : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10"
+                      : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10",
+                    sequenceMode !== 0 && "opacity-50 cursor-not-allowed"
                   )}
                 >
                   <div className="flex justify-between items-center">
@@ -424,15 +508,54 @@ export default function App() {
                     </div>
                   </div>
                   <div className="mt-auto">
-                    <p className="text-lg font-bold leading-tight">
+                    <p className="text-[15px] font-bold leading-tight">
                       {id === 1 ? 'Living Room' : id === 2 ? 'Main Gate' : id === 3 ? 'Cooling Fan' : 'Sprinklers'}
                     </p>
                     <p className={cn("text-[10px] font-medium", relays[id] ? "text-indigo-400" : "text-slate-500")}>
-                      {relays[id] ? 'Active / ON' : 'Inactive / OFF'}
+                      {relays[id] ? 'Active' : 'Inactive'}
                     </p>
                   </div>
                 </div>
               ))}
+
+              {/* Sequence Controls */}
+              <div 
+                onClick={() => toggleSequence(1)}
+                className={cn(
+                  "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
+                  sequenceMode === 1 
+                    ? "bg-purple-500/20 border-purple-500/40 text-purple-200" 
+                    : "bg-white/5 border-white/10 text-slate-400"
+                )}
+              >
+                <div className="flex justify-between">
+                  <Zap size={16} className={sequenceMode === 1 ? "text-purple-400" : "text-slate-600"} />
+                  <RotateCw size={14} className={cn(sequenceMode === 1 && "animate-spin")} />
+                </div>
+                <div className="mt-auto">
+                  <p className="text-[13px] font-bold">Seq: 1-2-3-4</p>
+                  <p className="text-[9px] opacity-60">Variation Mode 1</p>
+                </div>
+              </div>
+
+              <div 
+                onClick={() => toggleSequence(2)}
+                className={cn(
+                  "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
+                  sequenceMode === 2 
+                    ? "bg-amber-500/20 border-amber-500/40 text-amber-200" 
+                    : "bg-white/5 border-white/10 text-slate-400"
+                )}
+              >
+                <div className="flex justify-between">
+                  <Zap size={16} className={sequenceMode === 2 ? "text-amber-400" : "text-slate-600"} />
+                  <RotateCw size={14} className={cn(sequenceMode === 2 && "animate-spin")} />
+                </div>
+                <div className="mt-auto">
+                  <p className="text-[13px] font-bold">Seq: 4-3-2-1</p>
+                  <p className="text-[9px] opacity-60">Variation Mode 2</p>
+                </div>
+              </div>
             </div>
           </div>
 
