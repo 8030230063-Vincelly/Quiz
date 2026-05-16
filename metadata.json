@@ -1,0 +1,6 @@
+{
+  "name": "SmartHome IoT Dashboard",
+  "description": "Modern IoT dashboard with ESP32 integration, 4-channel relay control, DHT11 monitoring, and Telegram Bot integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
