@@ -8,6 +8,9 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Global Middleware
+app.use(express.json());
+
 // Configurations
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
@@ -18,10 +21,10 @@ const isBotConfigured = !!(BOT_TOKEN && BOT_TOKEN !== 'YOUR_TELEGRAM_BOT_TOKEN')
 let iotState = {
   relays: { 1: false, 2: false, 3: false, 4: false },
   dht: { temp: 24, humidity: 60, lastUpdate: new Date() },
-  espConnected: true,
+  espConnected: false,
   logs: [] as any[],
   telegramLogs: [] as any[],
-  botStatus: 'offline'
+  botStatus: isBotConfigured ? 'online' : 'unconfigured'
 };
 
 // Initialize Telegram Bot if token exists
@@ -57,9 +60,12 @@ const addLog = (message: string) => {
 
 let lastRealData = 0;
 
-// API Endpoints
-app.post('/api/update-sensor', express.json(), (req, res) => {
+// API Router
+const api = express.Router();
+
+api.post('/update-sensor', (req, res) => {
   const { temp, humidity } = req.body;
+  console.log('Update Data:', { temp, humidity });
   if (temp !== undefined && humidity !== undefined) {
     iotState.dht.temp = temp;
     iotState.dht.humidity = humidity;
@@ -68,20 +74,21 @@ app.post('/api/update-sensor', express.json(), (req, res) => {
     lastRealData = Date.now();
     res.json({ status: 'ok' });
   } else {
-    res.status(400).json({ error: 'Invalid data' });
+    res.status(400).json({ error: 'Invalid data format' });
   }
 });
 
-app.get('/api/dht', (req, res) => {
+api.get('/dht', (req, res) => {
+  const isOnline = (Date.now() - lastRealData < 60000);
   res.json({
     status: 'ok',
     data: iotState.dht,
-    espConnected: (Date.now() - lastRealData < 60000) || (process.env.NODE_ENV !== 'production'),
+    espConnected: isOnline || (process.env.NODE_ENV !== 'production'),
     botStatus: isBotConfigured ? iotState.botStatus : 'unconfigured'
   });
 });
 
-app.get('/api/dht/history', (req, res) => {
+api.get('/dht/history', (req, res) => {
   const now = Date.now();
   const history = Array.from({ length: 20 }, (_, i) => ({
     time: new Date(now - (19 - i) * 60000),
@@ -91,7 +98,7 @@ app.get('/api/dht/history', (req, res) => {
   res.json(history);
 });
 
-app.get('/api/relay/:id/:state', (req, res) => {
+api.get('/relay/:id/:state', (req, res) => {
   const { id, state } = req.params;
   const relayId = parseInt(id) as keyof typeof iotState.relays;
   const isOn = state === 'on';
@@ -108,20 +115,24 @@ app.get('/api/relay/:id/:state', (req, res) => {
   res.json({ status: 'ok', relay: id, state });
 });
 
-app.get('/api/relays', (req, res) => {
+api.get('/relays', (req, res) => {
   res.json(iotState.relays);
 });
 
-app.get('/api/logs', (req, res) => {
+api.get('/logs', (req, res) => {
   res.json({
     activity: iotState.logs,
     telegram: iotState.telegramLogs
   });
 });
 
-app.get('/api', (req, res) => {
+api.get('/', (req, res) => {
   res.json({ status: 'API is running' });
 });
+
+// Handle both /api/... and /...
+app.use('/api', api);
+app.use('/', api);
 
 // Production: Serve static files from root for standard Vercel deployments
 // (If not caught by rewrites)
