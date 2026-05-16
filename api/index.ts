@@ -15,7 +15,9 @@ app.use(express.json());
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-const isBotConfigured = !!(BOT_TOKEN && BOT_TOKEN !== 'YOUR_TELEGRAM_BOT_TOKEN');
+const isBotConfigured = !!(BOT_TOKEN && 
+                          BOT_TOKEN !== 'YOUR_TELEGRAM_BOT_TOKEN' && 
+                          BOT_TOKEN !== '');
 
 // Mock IoT State (Note: Memory resets on Serverless Vercel)
 let iotState = {
@@ -27,26 +29,34 @@ let iotState = {
   botStatus: isBotConfigured ? 'online' : 'unconfigured'
 };
 
-// Initialize Telegram Bot if token exists
+// Initialize Telegram Bot
+// NOTE: Polling is disabled on Vercel/Production because Serverless Functions 
+// will kill the process. Use Webhooks for production bot logic.
 let bot: TelegramBot | null = null;
+
 if (isBotConfigured && process.env.NODE_ENV !== 'test') {
   try {
-    bot = new TelegramBot(BOT_TOKEN as string, { polling: true });
+    // Only use polling in local development
+    const usePolling = process.env.NODE_ENV !== 'production' && !process.env.VERCEL;
+    
+    bot = new TelegramBot(BOT_TOKEN as string, { polling: usePolling });
     iotState.botStatus = 'online';
     
-    bot.on('message', (msg) => {
-      const text = msg.text;
-      iotState.telegramLogs.unshift({
-        time: new Date(),
-        user: msg.from?.username || 'Unknown',
-        command: text
-      });
-      if (iotState.telegramLogs.length > 50) iotState.telegramLogs.pop();
+    if (usePolling) {
+      bot.on('message', (msg) => {
+        const text = msg.text;
+        iotState.telegramLogs.unshift({
+          time: new Date(),
+          user: msg.from?.username || 'Unknown',
+          command: text
+        });
+        if (iotState.telegramLogs.length > 50) iotState.telegramLogs.pop();
 
-      if (text === '/start') {
-        bot?.sendMessage(msg.chat.id, 'Welcome to SmartHome IoT Bot!');
-      }
-    });
+        if (text === '/start') {
+          bot?.sendMessage(msg.chat.id, 'Welcome to SmartHome IoT Bot!');
+        }
+      });
+    }
   } catch (err) {
     iotState.botStatus = 'error';
   }
