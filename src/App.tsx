@@ -83,6 +83,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<{ id: number; text: string }[]>([]);
+  const isSyncPaused = useRef(false);
 
   // Refs for chart data
   const fetchData = async () => {
@@ -90,15 +91,9 @@ export default function App() {
       const endpoints = ['/api/dht', '/api/relays', '/api/logs'];
       const responses = await Promise.all(endpoints.map(e => fetch(e)));
 
-      // Check if any response is not OK (e.g. 404 or server still starting)
+      // Check if any response is not OK
       for (const res of responses) {
-        if (!res.ok) {
-          throw new Error(`Server returned ${res.status} for ${res.url}`);
-        }
-        const contentType = res.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-          throw new Error(`Expected JSON but got ${contentType} for ${res.url}`);
-        }
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
       }
 
       const [dhtData, relayData, logData] = await Promise.all(responses.map(res => res.json()));
@@ -111,28 +106,36 @@ export default function App() {
         api: true
       }));
 
-      setRelays(relayData.relays);
-      setSequenceMode(relayData.sequence);
+      // Only update relays and sequence if user hasn't just clicked something
+      if (!isSyncPaused.current) {
+        setRelays(relayData.relays);
+        setSequenceMode(relayData.sequence);
+      }
+      
       setLogs(logData.activity);
       setTelegramLogs(logData.telegram);
 
     } catch (error) {
       console.error('Fetch error:', error);
-      // Only set API false if it's a persistent failure
       setConnectionStatus(prev => ({ ...prev, api: false }));
     }
   };
 
   const toggleSequence = async (mode: number) => {
     const newMode = sequenceMode === mode ? 0 : mode;
+    isSyncPaused.current = true; // Pause sync
+    setSequenceMode(newMode); // Optimistic UI
+    
     try {
       const res = await fetch(`/api/sequence/${newMode}`);
       if (res.ok) {
-        setSequenceMode(newMode);
         addNotification(`Sequence changed to: ${newMode === 0 ? 'Normal' : newMode === 1 ? '1-2-3-4' : '4-3-2-1'}`);
       }
     } catch (err) {
       console.error('Sequence toggle error:', err);
+    } finally {
+      // Resume sync after 2 seconds
+      setTimeout(() => { isSyncPaused.current = false; }, 2000);
     }
   };
 
@@ -161,14 +164,19 @@ export default function App() {
 
   const toggleRelay = async (id: number) => {
     const newState = !relays[id] ? 'on' : 'off';
+    isSyncPaused.current = true; // Pause sync
+    setRelays(prev => ({ ...prev, [id]: !prev[id] })); // Optimistic UI update
+    
     try {
       const res = await fetch(`/api/relay/${id}/${newState}`);
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        setRelays(prev => ({ ...prev, [id]: !prev[id] }));
+      if (res.ok) {
         addNotification(`Relay ${id} turned ${newState}`);
       }
     } catch (err) {
       console.error('Relay toggle error:', err);
+    } finally {
+      // Resume sync after 2 seconds
+      setTimeout(() => { isSyncPaused.current = false; }, 2000);
     }
   };
 

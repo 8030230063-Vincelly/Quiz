@@ -52,13 +52,20 @@ void initWiFi() {
 unsigned long lastUpdate = 0;
 const int updateInterval = 10000; // Kirim data sensor setiap 10 detik
 
+unsigned long lastRelayCheck = 0;
+const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik
+
 int currentSequence = 0;
 unsigned long lastSeqStep = 0;
 int seqStep = 0;
 
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
-    checkRelayStatus();
+    // Cek status relay setiap 1 detik
+    if (millis() - lastRelayCheck > relayCheckInterval) {
+      checkRelayStatus();
+      lastRelayCheck = millis();
+    }
     
     // Handle Sequence Logic
     if (currentSequence == 1) { // 1-2-3-4
