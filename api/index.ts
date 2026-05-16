@@ -10,6 +10,10 @@ const PORT = 3000;
 
 // Global Middleware
 app.use(express.json());
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] Global Log: ${req.method} ${req.url}`);
+  next();
+});
 
 // Configurations
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -149,12 +153,12 @@ api.get('/', (req, res) => {
 // API mounting
 app.use('/api', api);
 
-// Production: Serve static files from root for standard deployments
+// Production: Serve static files from root
 if (process.env.NODE_ENV === 'production') {
   const distPath = path.join(process.cwd(), 'dist');
   app.use(express.static(distPath));
   
-  // Catch-all for SPA
+  // SPA Catch-all
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api')) {
       return res.status(404).json({ error: 'API route not found' });
