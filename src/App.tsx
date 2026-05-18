@@ -83,6 +83,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<{ id: number; text: string }[]>([]);
+  const isSyncPaused = useRef(false);
 
   // Refs for chart data
   const fetchData = async () => {
@@ -111,8 +112,11 @@ export default function App() {
         api: true
       }));
 
-      setRelays(relayData.relays);
-      setSequenceMode(relayData.sequence);
+      // Only update from server if user interaction isn't pending
+      if (!isSyncPaused.current) {
+        setRelays(relayData.relays);
+        setSequenceMode(relayData.sequence);
+      }
       
       setLogs(logData.activity);
       setTelegramLogs(logData.telegram);
@@ -126,14 +130,18 @@ export default function App() {
 
   const toggleSequence = async (mode: number) => {
     const newMode = sequenceMode === mode ? 0 : mode;
+    isSyncPaused.current = true;
+    setSequenceMode(newMode);
+
     try {
       const res = await fetch(`/api/sequence/${newMode}`);
       if (res.ok) {
-        setSequenceMode(newMode);
-        addNotification(`Sequence changed to: ${newMode === 0 ? 'Normal' : newMode === 1 ? '1-2-3-4' : '4-3-2-1'}`);
+        addNotification(`Variation: ${newMode === 0 ? 'Off' : newMode === 1 ? '1-2-3-4' : '4-3-2-1'}`);
       }
     } catch (err) {
       console.error('Sequence toggle error:', err);
+    } finally {
+      setTimeout(() => { isSyncPaused.current = false; }, 3000);
     }
   };
 
@@ -162,14 +170,18 @@ export default function App() {
 
   const toggleRelay = async (id: number) => {
     const newState = !relays[id] ? 'on' : 'off';
+    isSyncPaused.current = true;
+    setRelays(prev => ({ ...prev, [id]: !prev[id] }));
+
     try {
       const res = await fetch(`/api/relay/${id}/${newState}`);
       if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        setRelays(prev => ({ ...prev, [id]: !prev[id] }));
-        addNotification(`Relay ${id} turned ${newState}`);
+        addNotification(`Lamp ${id} is now ${newState.toUpperCase()}`);
       }
     } catch (err) {
       console.error('Relay toggle error:', err);
+    } finally {
+      setTimeout(() => { isSyncPaused.current = false; }, 3000);
     }
   };
 

@@ -62,7 +62,11 @@ int seqStep = 0;
 
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
-    checkRelayStatus();
+    // Cek status relay setiap 1 detik untuk kestabilan
+    if (millis() - lastRelayCheck > relayCheckInterval) {
+      checkRelayStatus();
+      lastRelayCheck = millis();
+    }
     
     // Handle Sequence Logic
     if (currentSequence == 1) { // 1-2-3-4
@@ -147,9 +151,11 @@ void sendSensorData() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
+  // Biar heartbeat tetep jalan walau DHT error (tulis 0)
   if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor!");
-    return;
+    Serial.println("Failed to read from DHT sensor! Heartbeat only.");
+    h = 0;
+    t = 0;
   }
 
   HTTPClient http;
@@ -161,10 +167,5 @@ void sendSensorData() {
   String jsonPayload = "{\"temp\":" + String(t) + ",\"humidity\":" + String(h) + "}";
   
   int httpCode = http.POST(jsonPayload);
-  if (httpCode > 0) {
-    Serial.printf("Sensor Data Sent. Code: %d\n", httpCode);
-  } else {
-    Serial.printf("Sensor Data Failed. Error: %s\n", http.errorToString(httpCode).c_str());
-  }
   http.end();
 }
