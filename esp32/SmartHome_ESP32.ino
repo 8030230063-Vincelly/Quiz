@@ -13,7 +13,8 @@ const char* serverUrl = "https://quiz-umber-rho.vercel.app";
 
 // --- KONFIGURASI PIN ---
 #define DHTPIN 4
-#define DHTTYPE DHT11
+#define DHTTYPE DHT11 // GANTI ke DHT22 jika sensor Anda berwarna Putih
+
 #define RELAY1_PIN 12
 #define RELAY2_PIN 13
 #define RELAY3_PIN 14
@@ -23,19 +24,18 @@ DHT dht(DHTPIN, DHTTYPE);
 
 void setup() {
   Serial.begin(115200);
-  
+  delay(1000); // Beri waktu stabilisasi Power-On
+
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   pinMode(RELAY3_PIN, OUTPUT);
   pinMode(RELAY4_PIN, OUTPUT);
 
-  // Matikan semua relay di awal (Active Low/High menyesuaikan module)
-  digitalWrite(RELAY1_PIN, HIGH); 
-  digitalWrite(RELAY2_PIN, HIGH);
-  digitalWrite(RELAY3_PIN, HIGH);
-  digitalWrite(RELAY4_PIN, HIGH);
+  // Matikan semua relay di awal
+  allRelaysOff();
 
   dht.begin();
+  Serial.println("DHT Sensor Initialized");
   initWiFi();
 }
 
