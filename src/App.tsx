@@ -84,10 +84,16 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<{ id: number; text: string }[]>([]);
   const isSyncPaused = useRef(false);
+  const lastInteractionTime = useRef(0);
 
   // Refs for chart data
   const fetchData = async () => {
+    // Capture the time when this specific fetch cycle started
+    const fetchStartTime = Date.now();
+    
     try {
+      if (isSyncPaused.current) return;
+
       const endpoints = ['/api/dht', '/api/relays', '/api/logs'];
       const responses = await Promise.all(endpoints.map(e => fetch(e)));
 
@@ -112,8 +118,9 @@ export default function App() {
         api: true
       }));
 
-      // Only update from server if user interaction isn't pending
-      if (!isSyncPaused.current) {
+      // Only update from server if user interaction isn't pending 
+      // AND this request started AFTER the last user interaction
+      if (!isSyncPaused.current && fetchStartTime > lastInteractionTime.current) {
         setRelays(relayData.relays);
         setSequenceMode(relayData.sequence);
       }
@@ -131,6 +138,7 @@ export default function App() {
   const toggleSequence = async (mode: number) => {
     const newMode = sequenceMode === mode ? 0 : mode;
     isSyncPaused.current = true;
+    lastInteractionTime.current = Date.now();
     setSequenceMode(newMode);
 
     try {
@@ -141,7 +149,11 @@ export default function App() {
     } catch (err) {
       console.error('Sequence toggle error:', err);
     } finally {
-      setTimeout(() => { isSyncPaused.current = false; }, 3000);
+      // Keep sync paused for 5 seconds to allow ESP32 to potentially catch up
+      // and server state to stabilize
+      setTimeout(() => { 
+        isSyncPaused.current = false; 
+      }, 5000);
     }
   };
 
@@ -171,6 +183,7 @@ export default function App() {
   const toggleRelay = async (id: number) => {
     const newState = !relays[id] ? 'on' : 'off';
     isSyncPaused.current = true;
+    lastInteractionTime.current = Date.now();
     setRelays(prev => ({ ...prev, [id]: !prev[id] }));
 
     try {
@@ -181,7 +194,10 @@ export default function App() {
     } catch (err) {
       console.error('Relay toggle error:', err);
     } finally {
-      setTimeout(() => { isSyncPaused.current = false; }, 3000);
+      // Keep sync paused for 5 seconds
+      setTimeout(() => { 
+        isSyncPaused.current = false; 
+      }, 5000);
     }
   };
 
