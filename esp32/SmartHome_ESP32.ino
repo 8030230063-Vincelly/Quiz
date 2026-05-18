@@ -150,9 +150,11 @@ void sendSensorData() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
+  // If DHT fails, use 0 instead of returning, so heartbeat still works
   if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor!");
-    return;
+    Serial.println("Failed to read from DHT sensor! Sending dummy values for heartbeat.");
+    h = 0;
+    t = 0;
   }
 
   HTTPClient http;
