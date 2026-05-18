@@ -24,18 +24,19 @@ DHT dht(DHTPIN, DHTTYPE);
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Beri waktu stabilisasi Power-On
 
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   pinMode(RELAY3_PIN, OUTPUT);
   pinMode(RELAY4_PIN, OUTPUT);
 
-  // Matikan semua relay di awal
-  allRelaysOff();
+  // Matikan semua relay di awal (Active Low/High menyesuaikan module)
+  digitalWrite(RELAY1_PIN, HIGH); 
+  digitalWrite(RELAY2_PIN, HIGH);
+  digitalWrite(RELAY3_PIN, HIGH);
+  digitalWrite(RELAY4_PIN, HIGH);
 
   dht.begin();
-  Serial.println("DHT Sensor Initialized");
   initWiFi();
 }
 
@@ -61,11 +62,7 @@ int seqStep = 0;
 
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
-    // Cek status relay setiap 1 detik
-    if (millis() - lastRelayCheck > relayCheckInterval) {
-      checkRelayStatus();
-      lastRelayCheck = millis();
-    }
+    checkRelayStatus();
     
     // Handle Sequence Logic
     if (currentSequence == 1) { // 1-2-3-4
@@ -150,11 +147,9 @@ void sendSensorData() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
-  // If DHT fails, use 0 instead of returning, so heartbeat still works
   if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor! Sending dummy values for heartbeat.");
-    h = 0;
-    t = 0;
+    Serial.println("Failed to read from DHT sensor!");
+    return;
   }
 
   HTTPClient http;

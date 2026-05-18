@@ -137,7 +137,6 @@ api.get('/relay/:id/:state', (req, res) => {
 });
 
 api.get('/relays', (req, res) => {
-  lastRealData = Date.now(); // Update heartbeat here too
   res.json({
     relays: iotState.relays,
     sequence: iotState.sequenceMode
