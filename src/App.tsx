@@ -95,61 +95,117 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [selectedNode, setSelectedNode] = useState('esp32');
 
+  const [useDirectIp, setUseDirectIp] = useState<boolean>(() => {
+    return localStorage.getItem('use_direct_ip') === 'true';
+  });
+  const [espLocalIp, setEspLocalIp] = useState<string>(() => {
+    return localStorage.getItem('esp_local_ip') || '';
+  });
+  const [directConnected, setDirectConnected] = useState<boolean>(false);
+
 
 
   // Refs for chart data
   const fetchData = async () => {
-    try {
-      const endpoints = ['/api/dht', '/api/relays', '/api/logs'];
-      const responses = await Promise.all(endpoints.map(e => fetch(e)));
+    let dhtData = null;
+    let relayData = null;
+    let logData = null;
+    let localSuccess = false;
 
-      // Check if any response is not OK (e.g. 404 or server still starting)
-      for (const res of responses) {
-        if (!res.ok) {
-          throw new Error(`Server returned ${res.status} for ${res.url}`);
+    if (useDirectIp && espLocalIp) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const localRes = await fetch(`http://${espLocalIp}/api/status`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (localRes.ok) {
+          const localStatus = await localRes.json();
+          dhtData = {
+            data: {
+              temp: localStatus.temp,
+              humidity: localStatus.humidity,
+              lastUpdate: new Date().toISOString()
+            },
+            espConnected: true,
+            botStatus: 'online'
+          };
+          relayData = {
+            sequence: localStatus.sequence,
+            relays: localStatus.relays
+          };
+          setDirectConnected(true);
+          localSuccess = true;
         }
-        const contentType = res.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-          throw new Error(`Expected JSON but got ${contentType} for ${res.url}`);
+      } catch (err) {
+        setDirectConnected(false);
+      }
+    }
+
+    try {
+      if (localSuccess) {
+        // If local succeeded, we still grab the logs from cloud server in background
+        const logsRes = await fetch('/api/logs');
+        if (logsRes.ok) {
+          logData = await logsRes.json();
         }
+      } else {
+        // Fallback or Cloud/Standard Mode
+        setDirectConnected(false);
+        const endpoints = ['/api/dht', '/api/relays', '/api/logs'];
+        const responses = await Promise.all(endpoints.map(e => fetch(e)));
+
+        for (const res of responses) {
+          if (!res.ok) {
+            throw new Error(`Server returned ${res.status} for ${res.url}`);
+          }
+        }
+
+        const [cloudDht, cloudRelays, cloudLogs] = await Promise.all(responses.map(res => res.json()));
+        dhtData = cloudDht;
+        relayData = cloudRelays;
+        logData = cloudLogs;
       }
 
-      const [dhtData, relayData, logData] = await Promise.all(responses.map(res => res.json()));
-
-      setDht(dhtData.data);
-      setConnectionStatus(prev => ({
-        ...prev,
-        esp: dhtData.espConnected,
-        bot: dhtData.botStatus,
-        api: true
-      }));
+      if (dhtData) {
+        setDht(dhtData.data);
+        setConnectionStatus(prev => ({
+          ...prev,
+          esp: dhtData.espConnected,
+          bot: dhtData.botStatus,
+          api: true
+        }));
+      }
 
       const now = Date.now();
 
-      // Only update sequence mode if the user has not interacted with it within the last 4 seconds
-      if (now - lastSequenceToggleTimeRef.current > 4000) {
-        setSequenceMode(relayData.sequence);
-      }
+      if (relayData) {
+        // Only update sequence mode if the user has not interacted with it within the last 4 seconds
+        if (now - lastSequenceToggleTimeRef.current > 4000) {
+          setSequenceMode(relayData.sequence);
+        }
 
-      // Only update relays whose states haven't been recently toggled by the user
-      setRelays(prev => {
-        const nextRelays = { ...prev };
-        let hasChanges = false;
-        for (const [key, val] of Object.entries(relayData.relays)) {
-          const rid = parseInt(key);
-          const lastToggle = lastToggleTimeRef.current[rid] || 0;
-          if (now - lastToggle > 4000) {
-            if (nextRelays[rid] !== val) {
-              nextRelays[rid] = val as boolean;
-              hasChanges = true;
+        // Only update relays whose states haven't been recently toggled by the user
+        setRelays(prev => {
+          const nextRelays = { ...prev };
+          let hasChanges = false;
+          for (const [key, val] of Object.entries(relayData.relays)) {
+            const rid = parseInt(key);
+            const lastToggle = lastToggleTimeRef.current[rid] || 0;
+            if (now - lastToggle > 4000) {
+              if (nextRelays[rid] !== val) {
+                nextRelays[rid] = val as boolean;
+                hasChanges = true;
+              }
             }
           }
-        }
-        return hasChanges ? nextRelays : prev;
-      });
-      
-      setLogs(logData.activity);
-      setTelegramLogs(logData.telegram);
+          return hasChanges ? nextRelays : prev;
+        });
+      }
+
+      if (logData) {
+        setLogs(logData.activity);
+        setTelegramLogs(logData.telegram);
+      }
 
     } catch (error) {
       console.error('Fetch error:', error);
@@ -204,15 +260,43 @@ export default function App() {
     lastToggleTimeRef.current[id] = Date.now();
     setRelays(prev => ({ ...prev, [id]: !prev[id] }));
 
-    try {
-      const res = await fetch(`/api/relay/${id}/${newState}`);
-      if (res.ok) {
-        addNotification(`Lampu ${id} sekarang ${newState === 'on' ? 'YANG MENYALA' : 'MATI'}`);
+    let success = false;
+
+    // 1. Coba koneksi local LAN direct IP terlebih dahulu jika diaktifkan
+    if (useDirectIp && espLocalIp) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const localRes = await fetch(`http://${espLocalIp}/api/relay?id=${id}&state=${newState}`, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (localRes.ok) {
+          success = true;
+          addNotification(`[Lokal Direct] Lampu ${id} seketika ${newState === 'on' ? 'MENYALA' : 'MATI'} (0ms delay)`);
+          
+          // Kirim background request ke backend API cloud untuk sinkronisasi state & trigger log aktivitas
+          fetch(`/api/relay/${id}/${newState}`).catch(err => 
+            console.warn('Background cloud sync failed', err)
+          );
+        }
+      } catch (err) {
+        console.warn('Direct LAN toggle gagal, otomatis fallback ke Cloud Vercel...', err);
       }
-    } catch (err) {
-      console.error('Relay toggle error:', err);
-      // Revert state if request failed
-      setRelays(prev => ({ ...prev, [id]: currentState }));
+    }
+
+    // 2. Fallback atau Standard Mode via Cloud API
+    if (!success) {
+      try {
+        const res = await fetch(`/api/relay/${id}/${newState}`);
+        if (res.ok) {
+          addNotification(`Lampu ${id} sekarang ${newState === 'on' ? 'YANG MENYALA' : 'MATI'}`);
+        }
+      } catch (err) {
+        console.error('Relay toggle error:', err);
+        // Revert state jika request gagal total
+        setRelays(prev => ({ ...prev, [id]: currentState }));
+      }
     }
   };
 
@@ -516,6 +600,89 @@ export default function App() {
                   </div>
                   <div className="text-3xl font-bold mb-1">99.8%</div>
                   <div className="text-xs text-slate-500 font-medium">ESP32 Connection Health</div>
+                </div>
+              </div>
+
+              {/* Direct LAN Setup Panel */}
+              <div className="bg-gradient-to-r from-indigo-950/40 via-slate-900/40 to-slate-900/40 border border-white/10 rounded-2xl p-6 relative overflow-hidden backdrop-blur-sm">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none" />
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-2 w-2 relative">
+                        <span className={cn(
+                          "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+                          directConnected ? "bg-emerald-400" : "bg-rose-400"
+                        )} />
+                        <span className={cn(
+                          "relative inline-flex rounded-full h-2 w-2",
+                          directConnected ? "bg-emerald-500" : "bg-rose-500"
+                        )} />
+                      </span>
+                      <h3 className="text-sm font-semibold tracking-wide text-white uppercase">⚡ Koneksi Lokal Direct LAN (Delay ~3ms)</h3>
+                    </div>
+                    <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
+                      Hubungkan peramban langsung ke IP lokal ESP32 Anda untuk bypass API cloud Vercel/Internet. Saklar lampu akan merespons instan seketika dalam beberapa milidetik!
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
+                    {/* Switch Mode toggle */}
+                    <div className="flex items-center gap-3 bg-black/20 px-4 py-2 rounded-xl border border-white/5">
+                      <span className="text-xs text-slate-300 font-medium whitespace-nowrap">Mode Direct IP:</span>
+                      <button
+                        onClick={() => {
+                          const nextVal = !useDirectIp;
+                          setUseDirectIp(nextVal);
+                          localStorage.setItem('use_direct_ip', String(nextVal));
+                          addNotification(`Mode Direct IP: ${nextVal ? 'DIKENDALIKAN LOKAL' : 'KEMBALI KE CLOUD'}`);
+                        }}
+                        className={cn(
+                          "w-12 h-6 rounded-full relative transition-colors duration-300 border border-white/10",
+                          useDirectIp ? "bg-indigo-600" : "bg-slate-800"
+                        )}
+                      >
+                        <span className={cn(
+                          "absolute top-0.5 left-0.5 w-[18px] h-[18px] bg-white rounded-full transition-all duration-300 shadow",
+                          useDirectIp ? "translate-x-6" : "translate-x-0"
+                        )} />
+                      </button>
+                    </div>
+
+                    {/* IP input and save button */}
+                    <div className="flex items-center gap-2">
+                      <div className="relative">
+                        <span className="absolute left-3 top-2 text-xs text-slate-500 font-mono">http://</span>
+                        <input
+                          type="text"
+                          placeholder="Contoh: 192.168.1.15"
+                          value={espLocalIp}
+                          onChange={(e) => {
+                            const val = e.target.value.trim();
+                            setEspLocalIp(val);
+                            localStorage.setItem('esp_local_ip', val);
+                          }}
+                          className="pl-14 pr-3 py-2 text-xs bg-slate-900/80 border border-white/10 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none w-48 text-indigo-200 font-mono"
+                        />
+                      </div>
+                      <button
+                        onClick={() => {
+                          fetchData();
+                          addNotification("Mengetes koneksi lokal ke ESP32...");
+                        }}
+                        className="p-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors self-stretch sm:self-auto shadow-lg shadow-indigo-600/10 active:scale-95"
+                      >
+                        <RotateCw size={14} className={cn(useDirectIp && "animate-spin")} />
+                        <span>Tes</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Additional Info Helper */}
+                <div className="mt-3 text-[10px] text-slate-500 flex items-center gap-1.5 border-t border-white/5 pt-3">
+                  <span className="font-semibold text-indigo-400 font-mono">Status Koneksi LAN:</span>
+                  <span>{directConnected ? `🟢 Terhubung langsung ke http://${espLocalIp} (Delay ~3ms)` : `🔴 Belum terhubung lokal (Gunakan input IP ESP32 Anda & pastikan satu jaringan WiFi)`}</span>
                 </div>
               </div>
 

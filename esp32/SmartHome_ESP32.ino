@@ -22,6 +22,10 @@ const char* serverUrl = "https://quiz-umber-rho.vercel.app";
 
 DHT dht(DHTPIN, DHTTYPE);
 
+// Prototipe Fungsi WebServer untuk compiler C++
+void handleStatus();
+void handleRelayControl();
+
 void setup() {
   Serial.begin(115200);
 
@@ -38,6 +42,12 @@ void setup() {
 
   dht.begin();
   initWiFi();
+
+  // Registrasi Endpoint WebServer Lokal
+  server.on("/api/status", handleStatus);
+  server.on("/api/relay", handleRelayControl);
+  server.begin();
+  Serial.println("Local HTTP WebServer started on port 80!");
 }
 
 void initWiFi() {
@@ -48,27 +58,85 @@ void initWiFi() {
     Serial.print(".");
   }
   Serial.println("\nConnected to WiFi");
+  Serial.print("IP Address ESP32: ");
+  Serial.println(WiFi.localIP()); // Cetak IP agar user gampang salin ke web dashboard
 }
 
 unsigned long lastUpdate = 0;
 const int updateInterval = 10000; // Kirim data sensor setiap 10 detik
 
-// --- OPTIMASI KONEKSI (HTTP KEEP-ALIVE) ---
-// Dengan memindahkan HTTPClient ke scope global, kita dapat menjaga koneksi TCP/SSL tetap terbuka.
-// Hal ini menghilangkan delay handshake TLS (~500-800ms) pada setiap putaran cek relay.
-HTTPClient httpRelay;
-bool isRelayHttpInitialized = false;
-
 unsigned long lastRelayCheck = 0;
-const int relayCheckInterval = 400; // Cek status relay setiap 400ms (0.4 detik) untuk respons instan tanpa lag!
+const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik
 
 int currentSequence = 0;
 unsigned long lastSeqStep = 0;
 int seqStep = 0;
 
+WebServer server(80);
+
+// Handler untuk memberikan status pembacaan sensor dan relay langsung via LAN (CORS-enabled)
+void handleStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+  
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(204);
+    return;
+  }
+
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+  if (isnan(h) || isnan(t)) { h = 0; t = 0; }
+
+  DynamicJsonDocument doc(512);
+  doc["temp"] = t;
+  doc["humidity"] = h;
+  doc["sequence"] = currentSequence;
+  
+  JsonObject rs = doc.createNestedObject("relays");
+  // Karena relay active-low, LOW berarti relay menyala (ON = true)
+  rs["1"] = (digitalRead(RELAY1_PIN) == LOW);
+  rs["2"] = (digitalRead(RELAY2_PIN) == LOW);
+  rs["3"] = (digitalRead(RELAY3_PIN) == LOW);
+  rs["4"] = (digitalRead(RELAY4_PIN) == LOW);
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+// Handler untuk kontrol relay instan dari web dashboard lokal (CORS-enabled)
+void handleRelayControl() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(204);
+    return;
+  }
+
+  if (server.hasArg("id") && server.hasArg("state")) {
+    int id = server.arg("id").toInt();
+    String state = server.arg("state");
+    bool pinValue = (state == "on" || state == "1") ? LOW : HIGH; // Active Low (LOW = ON)
+
+    if (id == 1) digitalWrite(RELAY1_PIN, pinValue);
+    else if (id == 2) digitalWrite(RELAY2_PIN, pinValue);
+    else if (id == 3) digitalWrite(RELAY3_PIN, pinValue);
+    else if (id == 4) digitalWrite(RELAY4_PIN, pinValue);
+
+    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Relay updated directly via LAN\"}");
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Missing arguments id or state\"}");
+  }
+}
+
 void loop() {
+  server.handleClient(); // Tangani request dari browser secara instan
   if (WiFi.status() == WL_CONNECTED) {
-    // Cek status relay setiap 400ms untuk respons instan
+    // Cek status relay setiap 1 detik untuk kestabilan
     if (millis() - lastRelayCheck > relayCheckInterval) {
       checkRelayStatus();
       lastRelayCheck = millis();
@@ -115,18 +183,14 @@ void allRelaysOff() {
 }
 
 void checkRelayStatus() {
-  if (!isRelayHttpInitialized) {
-    String url = String(serverUrl) + "/api/relays";
-    httpRelay.begin(url);
-    httpRelay.setReuseConnection(true); // Sangat krusial agar koneksi TCP/SSL tetap aktif
-    httpRelay.setTimeout(1500);          // Cegah pembekuan loop jika server agak lambat merespons
-    isRelayHttpInitialized = true;
-  }
+  HTTPClient http;
+  String url = String(serverUrl) + "/api/relays";
   
-  int httpCode = httpRelay.GET();
+  http.begin(url);
+  int httpCode = http.GET();
 
   if (httpCode == 200) {
-    String payload = httpRelay.getString();
+    String payload = http.getString();
     DynamicJsonDocument doc(512);
     deserializeJson(doc, payload);
 
@@ -136,7 +200,7 @@ void checkRelayStatus() {
       currentSequence = newSeq;
       seqStep = 0;
       if (currentSequence == 0) {
-        // Reset ke status normal relay jika variasi dinonaktifkan
+        // Reset to normal relay state if sequence stopped
         JsonObject rs = doc["relays"];
         digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
         digitalWrite(RELAY2_PIN, rs["2"] ? LOW : HIGH);
@@ -145,7 +209,7 @@ void checkRelayStatus() {
       }
     }
 
-    // Hanya ubah status relay jika mode variasi mati (0)
+    // Only update relays normally if no sequence is running
     if (currentSequence == 0) {
       JsonObject rs = doc["relays"];
       digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
@@ -153,12 +217,8 @@ void checkRelayStatus() {
       digitalWrite(RELAY3_PIN, rs["3"] ? LOW : HIGH);
       digitalWrite(RELAY4_PIN, rs["4"] ? LOW : HIGH);
     }
-  } else if (httpCode < 0) {
-    // Jika koneksi gagal (misal server reset/timeout), tutup socket dan trigger fresh connect di loop berikutnya
-    Serial.printf("[HTTP] GET gagal, error: %s\n", httpRelay.errorToString(httpCode).c_str());
-    httpRelay.end();
-    isRelayHttpInitialized = false;
   }
+  http.end();
 }
 
 void sendSensorData() {
