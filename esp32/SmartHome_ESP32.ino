@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "DHT.h"
@@ -22,9 +23,12 @@ const char* serverUrl = "https://quiz-umber-rho.vercel.app";
 
 DHT dht(DHTPIN, DHTTYPE);
 
+WebServer server(80);
+
 // Prototipe Fungsi WebServer untuk compiler C++
 void handleStatus();
 void handleRelayControl();
+void handleSpeedControl();
 
 void setup() {
   Serial.begin(115200);
@@ -46,6 +50,7 @@ void setup() {
   // Registrasi Endpoint WebServer Lokal
   server.on("/api/status", handleStatus);
   server.on("/api/relay", handleRelayControl);
+  server.on("/api/speed", handleSpeedControl);
   server.begin();
   Serial.println("Local HTTP WebServer started on port 80!");
 }
@@ -71,8 +76,7 @@ const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik
 int currentSequence = 0;
 unsigned long lastSeqStep = 0;
 int seqStep = 0;
-
-WebServer server(80);
+int sequenceDelay = 200; // default interval 200ms (lebih cepat dibanding sebelumnya yang 500ms)
 
 // Handler untuk memberikan status pembacaan sensor dan relay langsung via LAN (CORS-enabled)
 void handleStatus() {
@@ -93,6 +97,7 @@ void handleStatus() {
   doc["temp"] = t;
   doc["humidity"] = h;
   doc["sequence"] = currentSequence;
+  doc["sequenceDelay"] = sequenceDelay;
   
   JsonObject rs = doc.createNestedObject("relays");
   // Karena relay active-low, LOW berarti relay menyala (ON = true)
@@ -133,6 +138,30 @@ void handleRelayControl() {
   }
 }
 
+// Handler untuk kontrol kecepatan variasi instan dari web dashboard lokal (CORS-enabled)
+void handleSpeedControl() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(204);
+    return;
+  }
+
+  if (server.hasArg("delay")) {
+    int delayVal = server.arg("delay").toInt();
+    if (delayVal >= 50 && delayVal <= 2000) {
+      sequenceDelay = delayVal;
+      server.send(200, "application/json", "{\"status\":\"ok\",\"sequenceDelay\":" + String(sequenceDelay) + "}");
+    } else {
+      server.send(400, "application/json", "{\"error\":\"Delay bounds are 50ms - 2000ms\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Missing delay query param\"}");
+  }
+}
+
 void loop() {
   server.handleClient(); // Tangani request dari browser secara instan
   if (WiFi.status() == WL_CONNECTED) {
@@ -144,7 +173,7 @@ void loop() {
     
     // Handle Sequence Logic
     if (currentSequence == 1) { // 1-2-3-4
-      if (millis() - lastSeqStep > 500) {
+      if (millis() - lastSeqStep > sequenceDelay) {
         allRelaysOff();
         if (seqStep == 0) digitalWrite(RELAY1_PIN, LOW);
         else if (seqStep == 1) digitalWrite(RELAY2_PIN, LOW);
@@ -154,7 +183,7 @@ void loop() {
         lastSeqStep = millis();
       }
     } else if (currentSequence == 2) { // 4-3-2-1
-      if (millis() - lastSeqStep > 500) {
+      if (millis() - lastSeqStep > sequenceDelay) {
         allRelaysOff();
         if (seqStep == 0) digitalWrite(RELAY4_PIN, LOW);
         else if (seqStep == 1) digitalWrite(RELAY3_PIN, LOW);
@@ -195,6 +224,10 @@ void checkRelayStatus() {
     deserializeJson(doc, payload);
 
     int newSeq = doc["sequence"] | 0;
+    
+    if (doc.containsKey("sequenceDelay")) {
+      sequenceDelay = doc["sequenceDelay"] | 200;
+    }
     
     if (newSeq != currentSequence) {
       currentSequence = newSeq;

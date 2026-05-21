@@ -102,6 +102,7 @@ export default function App() {
     return localStorage.getItem('esp_local_ip') || '';
   });
   const [directConnected, setDirectConnected] = useState<boolean>(false);
+  const [sequenceDelay, setSequenceDelay] = useState<number>(200);
 
 
 
@@ -131,7 +132,8 @@ export default function App() {
           };
           relayData = {
             sequence: localStatus.sequence,
-            relays: localStatus.relays
+            relays: localStatus.relays,
+            sequenceDelay: localStatus.sequenceDelay
           };
           setDirectConnected(true);
           localSuccess = true;
@@ -182,6 +184,9 @@ export default function App() {
         // Only update sequence mode if the user has not interacted with it within the last 4 seconds
         if (now - lastSequenceToggleTimeRef.current > 4000) {
           setSequenceMode(relayData.sequence);
+          if (relayData.sequenceDelay !== undefined) {
+            setSequenceDelay(relayData.sequenceDelay);
+          }
         }
 
         // Only update relays whose states haven't been recently toggled by the user
@@ -226,6 +231,44 @@ export default function App() {
       }
     } catch (err) {
       console.error('Sequence toggle error:', err);
+    }
+  };
+
+  const adjustSequenceSpeed = async (delayVal: number) => {
+    setSequenceDelay(delayVal);
+    let success = false;
+
+    // 1. Coba koneksi local LAN direct IP terlebih dahulu jika diaktifkan
+    if (useDirectIp && espLocalIp) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const localRes = await fetch(`http://${espLocalIp}/api/speed?delay=${delayVal}`, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (localRes.ok) {
+          success = true;
+          addNotification(`[Lokal Direct] Delay variasi: ${delayVal}ms (Respons Instan)`);
+          
+          // Kirim background sync ke cloud
+          fetch(`/api/sequence-speed/${delayVal}`).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('Direct speed adjustment failed, falling back to cloud...', err);
+      }
+    }
+
+    // 2. Fallback via Cloud API
+    if (!success) {
+      try {
+        const res = await fetch(`/api/sequence-speed/${delayVal}`);
+        if (res.ok) {
+          addNotification(`Delay variasi diatur ke ${delayVal}ms`);
+        }
+      } catch (err) {
+        console.error('Speed adjust error:', err);
+      }
     }
   };
 
@@ -777,6 +820,33 @@ export default function App() {
                     <div className="mt-auto">
                       <p className="text-[13px] font-bold">Seq: 4-3-2-1</p>
                       <p className="text-[9px] opacity-60">Variation Mode 2</p>
+                    </div>
+                  </div>
+
+                  {/* Sequence Speed Slider Card */}
+                  <div className="col-span-2 sm:col-span-3 bg-white/5 border border-white/10 rounded-2xl p-5 flex flex-col justify-between gap-3 backdrop-blur-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Activity size={16} className="text-indigo-400 animate-pulse" />
+                        <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">⚡ Delay Kecepatan: {sequenceDelay} ms</span>
+                      </div>
+                      <span className="text-[10px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-0.5 rounded-md">
+                        {sequenceDelay <= 100 ? "Sangat Cepat 🔥" : sequenceDelay <= 250 ? "Cepat ⚡" : sequenceDelay <= 500 ? "Sedang 🟢" : "Lambat 🐢"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3 w-full">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Hi-Speed</span>
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="1000" 
+                        step="25"
+                        value={sequenceDelay}
+                        onChange={(e) => adjustSequenceSpeed(parseInt(e.target.value))}
+                        className="flex-1 accent-indigo-500 h-1 rounded-lg cursor-pointer bg-slate-800 outline-none transition-all hover:accent-indigo-400"
+                      />
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Slow-Mo</span>
                     </div>
                   </div>
                 </div>

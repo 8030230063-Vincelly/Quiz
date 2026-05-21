@@ -29,6 +29,7 @@ let iotState = {
   dht: { temp: 24, humidity: 60, lastUpdate: new Date() },
   espConnected: false,
   sequenceMode: 0, // 0: off, 1: 1-2-3-4, 2: 4-3-2-1
+  sequenceDelay: 200, // Speed delay in ms (lebih cepat, default 200ms)
   logs: [] as any[],
   telegramLogs: [] as any[],
   botStatus: isBotConfigured ? 'online' : 'unconfigured'
@@ -140,7 +141,8 @@ api.get('/relays', (req, res) => {
   lastRealData = Date.now(); // Heartbeat on relay poll too
   res.json({
     relays: iotState.relays,
-    sequence: iotState.sequenceMode
+    sequence: iotState.sequenceMode,
+    sequenceDelay: iotState.sequenceDelay
   });
 });
 
@@ -152,6 +154,17 @@ api.get('/sequence/:mode', (req, res) => {
     res.json({ status: 'ok', sequence: mode });
   } else {
     res.status(400).json({ error: 'Invalid mode' });
+  }
+});
+
+api.get('/sequence-speed/:delay', (req, res) => {
+  const delayVal = parseInt(req.params.delay);
+  if (delayVal >= 50 && delayVal <= 2000) {
+    iotState.sequenceDelay = delayVal;
+    addLog(`Sequence speed changed to: ${delayVal}ms`);
+    res.json({ status: 'ok', sequenceDelay: delayVal });
+  } else {
+    res.status(400).json({ error: 'Invalid delay bounds' });
   }
 });
 
