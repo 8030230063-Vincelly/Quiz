@@ -53,8 +53,14 @@ void initWiFi() {
 unsigned long lastUpdate = 0;
 const int updateInterval = 10000; // Kirim data sensor setiap 10 detik
 
+// --- OPTIMASI KONEKSI (HTTP KEEP-ALIVE) ---
+// Dengan memindahkan HTTPClient ke scope global, kita dapat menjaga koneksi TCP/SSL tetap terbuka.
+// Hal ini menghilangkan delay handshake TLS (~500-800ms) pada setiap putaran cek relay.
+HTTPClient httpRelay;
+bool isRelayHttpInitialized = false;
+
 unsigned long lastRelayCheck = 0;
-const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik
+const int relayCheckInterval = 400; // Cek status relay setiap 400ms (0.4 detik) untuk respons instan tanpa lag!
 
 int currentSequence = 0;
 unsigned long lastSeqStep = 0;
@@ -62,7 +68,7 @@ int seqStep = 0;
 
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
-    // Cek status relay setiap 1 detik untuk kestabilan
+    // Cek status relay setiap 400ms untuk respons instan
     if (millis() - lastRelayCheck > relayCheckInterval) {
       checkRelayStatus();
       lastRelayCheck = millis();
@@ -109,14 +115,18 @@ void allRelaysOff() {
 }
 
 void checkRelayStatus() {
-  HTTPClient http;
-  String url = String(serverUrl) + "/api/relays";
+  if (!isRelayHttpInitialized) {
+    String url = String(serverUrl) + "/api/relays";
+    httpRelay.begin(url);
+    httpRelay.setReuseConnection(true); // Sangat krusial agar koneksi TCP/SSL tetap aktif
+    httpRelay.setTimeout(1500);          // Cegah pembekuan loop jika server agak lambat merespons
+    isRelayHttpInitialized = true;
+  }
   
-  http.begin(url);
-  int httpCode = http.GET();
+  int httpCode = httpRelay.GET();
 
   if (httpCode == 200) {
-    String payload = http.getString();
+    String payload = httpRelay.getString();
     DynamicJsonDocument doc(512);
     deserializeJson(doc, payload);
 
@@ -126,7 +136,7 @@ void checkRelayStatus() {
       currentSequence = newSeq;
       seqStep = 0;
       if (currentSequence == 0) {
-        // Reset to normal relay state if sequence stopped
+        // Reset ke status normal relay jika variasi dinonaktifkan
         JsonObject rs = doc["relays"];
         digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
         digitalWrite(RELAY2_PIN, rs["2"] ? LOW : HIGH);
@@ -135,7 +145,7 @@ void checkRelayStatus() {
       }
     }
 
-    // Only update relays normally if no sequence is running
+    // Hanya ubah status relay jika mode variasi mati (0)
     if (currentSequence == 0) {
       JsonObject rs = doc["relays"];
       digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
@@ -143,8 +153,12 @@ void checkRelayStatus() {
       digitalWrite(RELAY3_PIN, rs["3"] ? LOW : HIGH);
       digitalWrite(RELAY4_PIN, rs["4"] ? LOW : HIGH);
     }
+  } else if (httpCode < 0) {
+    // Jika koneksi gagal (misal server reset/timeout), tutup socket dan trigger fresh connect di loop berikutnya
+    Serial.printf("[HTTP] GET gagal, error: %s\n", httpRelay.errorToString(httpCode).c_str());
+    httpRelay.end();
+    isRelayHttpInitialized = false;
   }
-  http.end();
 }
 
 void sendSensorData() {

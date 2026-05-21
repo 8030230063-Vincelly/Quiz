@@ -20,7 +20,13 @@ import {
   Mic,
   MicOff,
   RotateCw,
-  Zap
+  Zap,
+  Network,
+  ArrowRight,
+  Database,
+  Send,
+  Smartphone,
+  Laptop
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Line } from 'react-chartjs-2';
@@ -83,17 +89,17 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<{ id: number; text: string }[]>([]);
-  const isSyncPaused = useRef(false);
-  const lastInteractionTime = useRef(0);
+  // Lock mechanism (per-relay and per-sequence) to prevent overwrite bouncing ("mati/hidup sendiri")
+  const lastToggleTimeRef = useRef<Record<number, number>>({});
+  const lastSequenceToggleTimeRef = useRef<number>(0);
+  const [activeTab, setActiveTab] = useState('Dashboard');
+  const [selectedNode, setSelectedNode] = useState('esp32');
+
+
 
   // Refs for chart data
   const fetchData = async () => {
-    // Capture the time when this specific fetch cycle started
-    const fetchStartTime = Date.now();
-    
     try {
-      if (isSyncPaused.current) return;
-
       const endpoints = ['/api/dht', '/api/relays', '/api/logs'];
       const responses = await Promise.all(endpoints.map(e => fetch(e)));
 
@@ -118,12 +124,29 @@ export default function App() {
         api: true
       }));
 
-      // Only update from server if user interaction isn't pending 
-      // AND this request started AFTER the last user interaction
-      if (!isSyncPaused.current && fetchStartTime > lastInteractionTime.current) {
-        setRelays(relayData.relays);
+      const now = Date.now();
+
+      // Only update sequence mode if the user has not interacted with it within the last 4 seconds
+      if (now - lastSequenceToggleTimeRef.current > 4000) {
         setSequenceMode(relayData.sequence);
       }
+
+      // Only update relays whose states haven't been recently toggled by the user
+      setRelays(prev => {
+        const nextRelays = { ...prev };
+        let hasChanges = false;
+        for (const [key, val] of Object.entries(relayData.relays)) {
+          const rid = parseInt(key);
+          const lastToggle = lastToggleTimeRef.current[rid] || 0;
+          if (now - lastToggle > 4000) {
+            if (nextRelays[rid] !== val) {
+              nextRelays[rid] = val as boolean;
+              hasChanges = true;
+            }
+          }
+        }
+        return hasChanges ? nextRelays : prev;
+      });
       
       setLogs(logData.activity);
       setTelegramLogs(logData.telegram);
@@ -137,23 +160,16 @@ export default function App() {
 
   const toggleSequence = async (mode: number) => {
     const newMode = sequenceMode === mode ? 0 : mode;
-    isSyncPaused.current = true;
-    lastInteractionTime.current = Date.now();
+    lastSequenceToggleTimeRef.current = Date.now();
     setSequenceMode(newMode);
 
     try {
       const res = await fetch(`/api/sequence/${newMode}`);
       if (res.ok) {
-        addNotification(`Variation: ${newMode === 0 ? 'Off' : newMode === 1 ? '1-2-3-4' : '4-3-2-1'}`);
+        addNotification(`Variasi: ${newMode === 0 ? 'Mati' : newMode === 1 ? 'Pola 1-2-3-4' : 'Pola 4-3-2-1'}`);
       }
     } catch (err) {
       console.error('Sequence toggle error:', err);
-    } finally {
-      // Keep sync paused for 5 seconds to allow ESP32 to potentially catch up
-      // and server state to stabilize
-      setTimeout(() => { 
-        isSyncPaused.current = false; 
-      }, 5000);
     }
   };
 
@@ -181,23 +197,22 @@ export default function App() {
   }, []);
 
   const toggleRelay = async (id: number) => {
-    const newState = !relays[id] ? 'on' : 'off';
-    isSyncPaused.current = true;
-    lastInteractionTime.current = Date.now();
+    const currentState = relays[id];
+    const newState = !currentState ? 'on' : 'off';
+    
+    // Protect immediately from update overwriting
+    lastToggleTimeRef.current[id] = Date.now();
     setRelays(prev => ({ ...prev, [id]: !prev[id] }));
 
     try {
       const res = await fetch(`/api/relay/${id}/${newState}`);
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        addNotification(`Lamp ${id} is now ${newState.toUpperCase()}`);
+      if (res.ok) {
+        addNotification(`Lampu ${id} sekarang ${newState === 'on' ? 'YANG MENYALA' : 'MATI'}`);
       }
     } catch (err) {
       console.error('Relay toggle error:', err);
-    } finally {
-      // Keep sync paused for 5 seconds
-      setTimeout(() => { 
-        isSyncPaused.current = false; 
-      }, 5000);
+      // Revert state if request failed
+      setRelays(prev => ({ ...prev, [id]: currentState }));
     }
   };
 
@@ -363,15 +378,19 @@ export default function App() {
 
           <nav className="flex-1 space-y-1">
             {[
-              { icon: LayoutDashboard, label: 'Dashboard', active: true },
-              { icon: Activity, label: 'Analytics' },
-              { icon: MessageSquare, label: 'Security' },
-            ].map((item, i) => (
+              { icon: LayoutDashboard, id: 'Dashboard', label: 'Dashboard' },
+              { icon: Activity, id: 'Analytics', label: 'Analytics' },
+              { icon: MessageSquare, id: 'Security', label: 'Security' },
+            ].map((item) => (
               <button
-                key={i}
+                key={item.id}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  setSidebarOpen(false);
+                }}
                 className={cn(
                   "sidebar-link w-full",
-                  item.active ? "sidebar-link-active" : "sidebar-link-inactive"
+                  activeTab === item.id ? "sidebar-link-active" : "sidebar-link-inactive"
                 )}
               >
                 <item.icon className="w-5 h-5" />
@@ -417,9 +436,15 @@ export default function App() {
             >
               <Menu size={20} />
             </button>
-            <div>
-              <h2 className="text-xl font-semibold">Device Overview</h2>
-              <p className="text-slate-500 text-xs">Last sync: {format(currentTime, 'MMM dd, yyyy — HH:mm:ss')}</p>
+             <div>
+              <h2 className="text-xl font-semibold">
+                {activeTab === 'Dashboard' && 'Device Overview'}
+                {activeTab === 'Analytics' && 'Suhu & Kelembaban Analytics'}
+                {activeTab === 'Security' && 'Keamanan & Pengawasan'}
+              </h2>
+              <p className="text-slate-500 text-xs">
+                {activeTab === 'Dashboard' ? `Last sync: ${format(currentTime, 'MMM dd, yyyy — HH:mm:ss')}` : 'Sistem Smart Home IoT ESP32'}
+              </p>
             </div>
           </div>
 
@@ -445,183 +470,271 @@ export default function App() {
         </header>
 
         <div className="p-8 space-y-6 max-w-7xl mx-auto">
-          {/* Top Row: Metrics */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
-                  <Thermometer size={24} />
-                </div>
-                <span className="text-[10px] font-bold text-emerald-400 py-1 px-2 rounded bg-emerald-500/10 uppercase">Optimal</span>
-              </div>
-              <div className="text-3xl font-bold mb-1">{dht.temp}°C</div>
-              <div className="text-xs text-slate-500 font-medium">Ambient Temperature (DHT11)</div>
-            </div>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
-                  <Droplets size={24} />
-                </div>
-                <span className="text-[10px] font-bold text-blue-400 py-1 px-2 rounded bg-blue-500/10 uppercase">Stable</span>
-              </div>
-              <div className="text-3xl font-bold mb-1">{dht.humidity}%</div>
-              <div className="text-xs text-slate-500 font-medium">Air Humidity Index</div>
-            </div>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400">
-                  <MessageSquare size={24} />
-                </div>
-                <span className="text-[10px] font-bold text-amber-400 py-1 px-2 rounded bg-amber-500/10 uppercase">Active</span>
-              </div>
-              <div className="text-3xl font-bold mb-1">{telegramLogs.length}</div>
-              <div className="text-xs text-slate-500 font-medium">Daily Telegram Triggers</div>
-            </div>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
-                  <Cpu size={24} />
-                </div>
-                <span className="text-[10px] font-bold text-indigo-400 py-1 px-2 rounded bg-indigo-500/10 uppercase">Healthy</span>
-              </div>
-              <div className="text-3xl font-bold mb-1">99.8%</div>
-              <div className="text-xs text-slate-500 font-medium">ESP32 Connection Health</div>
-            </div>
-          </div>
-
-          {/* Main Visual Area */}
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6 h-[400px] flex flex-col">
-              <div className="flex items-center justify-between mb-8">
-                <h3 className="text-sm font-medium">Environmental History</h3>
-                <div className="flex gap-4">
-                  <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                    <span className="w-2 h-2 rounded-full bg-indigo-500" /> Temp
+          {activeTab === 'Dashboard' && (
+            <>
+              {/* Top Row: Metrics */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+                      <Thermometer size={24} />
+                    </div>
+                    <span className="text-[10px] font-bold text-emerald-400 py-1 px-2 rounded bg-emerald-500/10 uppercase">Optimal</span>
                   </div>
-                  <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                    <span className="w-2 h-2 rounded-full bg-blue-400" /> Hum
+                  <div className="text-3xl font-bold mb-1">{dht.temp}°C</div>
+                  <div className="text-xs text-slate-500 font-medium">Ambient Temperature (DHT11)</div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
+                      <Droplets size={24} />
+                    </div>
+                    <span className="text-[10px] font-bold text-blue-400 py-1 px-2 rounded bg-blue-500/10 uppercase">Stable</span>
                   </div>
+                  <div className="text-3xl font-bold mb-1">{dht.humidity}%</div>
+                  <div className="text-xs text-slate-500 font-medium">Air Humidity Index</div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400">
+                      <MessageSquare size={24} />
+                    </div>
+                    <span className="text-[10px] font-bold text-amber-400 py-1 px-2 rounded bg-amber-500/10 uppercase">Active</span>
+                  </div>
+                  <div className="text-3xl font-bold mb-1">{telegramLogs.length}</div>
+                  <div className="text-xs text-slate-500 font-medium">Daily Telegram Triggers</div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
+                      <Cpu size={24} />
+                    </div>
+                    <span className="text-[10px] font-bold text-indigo-400 py-1 px-2 rounded bg-indigo-500/10 uppercase">Healthy</span>
+                  </div>
+                  <div className="text-3xl font-bold mb-1">99.8%</div>
+                  <div className="text-xs text-slate-500 font-medium">ESP32 Connection Health</div>
                 </div>
               </div>
-              <div className="flex-1 w-full min-h-0">
-                <Line data={chartData} options={chartOptions} />
-              </div>
-            </div>
 
-            <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4 h-auto lg:h-[400px]">
-              {[1, 2, 3, 4].map(id => (
-                <div 
-                  key={id}
-                  onClick={() => toggleRelay(id)}
-                  className={cn(
-                    "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
-                    relays[id] && sequenceMode === 0
-                      ? "bg-indigo-500/10 border-indigo-500/30 text-white" 
-                      : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10",
-                    sequenceMode !== 0 && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <div className="flex justify-between items-center">
-                    <span className={cn("text-xs font-semibold", relays[id] ? "text-indigo-400" : "text-slate-500")}>RELAY {id}</span>
-                    <div className={cn(
-                      "w-8 h-4 rounded-full relative transition-colors duration-300",
-                      relays[id] ? "bg-indigo-500" : "bg-slate-700"
-                    )}>
-                      <motion.div 
-                        animate={{ x: relays[id] ? 16 : 0 }}
-                        className="absolute left-1 top-1 w-2 h-2 bg-white rounded-full shadow-sm"
-                      />
+              {/* Main Visual Area */}
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6 h-[400px] flex flex-col">
+                  <div className="flex items-center justify-between mb-8">
+                    <h3 className="text-sm font-medium">Environmental History</h3>
+                    <div className="flex gap-4">
+                      <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                        <span className="w-2 h-2 rounded-full bg-indigo-500" /> Temp
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                        <span className="w-2 h-2 rounded-full bg-blue-400" /> Hum
+                      </div>
                     </div>
                   </div>
-                  <div className="mt-auto">
-                    <p className="text-[15px] font-bold leading-tight">
-                      {id === 1 ? 'Living Room' : id === 2 ? 'Main Gate' : id === 3 ? 'Cooling Fan' : 'Sprinklers'}
-                    </p>
-                    <p className={cn("text-[10px] font-medium", relays[id] ? "text-indigo-400" : "text-slate-500")}>
-                      {relays[id] ? 'Active' : 'Inactive'}
-                    </p>
+                  <div className="flex-1 w-full min-h-0">
+                    <Line data={chartData} options={chartOptions} />
                   </div>
                 </div>
-              ))}
 
-              {/* Sequence Controls */}
-              <div 
-                onClick={() => toggleSequence(1)}
-                className={cn(
-                  "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
-                  sequenceMode === 1 
-                    ? "bg-purple-500/20 border-purple-500/40 text-purple-200" 
-                    : "bg-white/5 border-white/10 text-slate-400"
-                )}
-              >
-                <div className="flex justify-between">
-                  <Zap size={16} className={sequenceMode === 1 ? "text-purple-400" : "text-slate-600"} />
-                  <RotateCw size={14} className={cn(sequenceMode === 1 && "animate-spin")} />
-                </div>
-                <div className="mt-auto">
-                  <p className="text-[13px] font-bold">Seq: 1-2-3-4</p>
-                  <p className="text-[9px] opacity-60">Variation Mode 1</p>
-                </div>
-              </div>
-
-              <div 
-                onClick={() => toggleSequence(2)}
-                className={cn(
-                  "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
-                  sequenceMode === 2 
-                    ? "bg-amber-500/20 border-amber-500/40 text-amber-200" 
-                    : "bg-white/5 border-white/10 text-slate-400"
-                )}
-              >
-                <div className="flex justify-between">
-                  <Zap size={16} className={sequenceMode === 2 ? "text-amber-400" : "text-slate-600"} />
-                  <RotateCw size={14} className={cn(sequenceMode === 2 && "animate-spin")} />
-                </div>
-                <div className="mt-auto">
-                  <p className="text-[13px] font-bold">Seq: 4-3-2-1</p>
-                  <p className="text-[9px] opacity-60">Variation Mode 2</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Bottom Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pb-8">
-            <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-6">Activity Monitor</h3>
-              <div className="space-y-4 max-h-[250px] overflow-y-auto pr-2 custom-scrollbar">
-                {logs.map((log, i) => (
-                  <div key={i} className="flex gap-4 group items-center">
-                    <span className="text-[10px] font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded uppercase">{format(new Date(log.time), 'HH:mm:ss')}</span>
-                    <span className="text-[13px] text-slate-300 font-medium">{log.message}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-[#1c1c22] border border-white/10 rounded-2xl p-5 flex flex-col">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
-                  <MessageSquare size={16} className="text-white" />
-                </div>
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Telegram Stream</span>
-              </div>
-              <div className="bg-black/40 rounded-xl p-4 font-mono text-[11px] flex-1 overflow-y-auto space-y-3 border border-white/5">
-                {telegramLogs.slice(0, 5).map((log, i) => (
-                  <div key={i} className="space-y-1">
-                    <div className="text-indigo-400 font-bold flex justify-between">
-                      <span>&gt; {log.command}</span>
-                      <span className="text-[9px] text-slate-600">@{log.user}</span>
+                <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4 h-auto lg:h-[400px]">
+                  {[1, 2, 3, 4].map(id => (
+                    <div 
+                      key={id}
+                      onClick={() => toggleRelay(id)}
+                      className={cn(
+                        "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
+                        relays[id] && sequenceMode === 0
+                          ? "bg-indigo-500/10 border-indigo-500/30 text-white" 
+                          : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10",
+                        sequenceMode !== 0 && "opacity-50 cursor-not-allowed"
+                      )}
+                    >
+                      <div className="flex justify-between items-center">
+                        <span className={cn("text-xs font-semibold", relays[id] ? "text-indigo-400" : "text-slate-500")}>RELAY {id}</span>
+                        <div className={cn(
+                          "w-8 h-4 rounded-full relative transition-colors duration-300",
+                          relays[id] ? "bg-indigo-500" : "bg-slate-700"
+                        )}>
+                          <motion.div 
+                            animate={{ x: relays[id] ? 16 : 0 }}
+                            className="absolute left-1 top-1 w-2 h-2 bg-white rounded-full shadow-sm"
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-auto">
+                        <p className="text-[15px] font-bold leading-tight">
+                          {id === 1 ? 'Living Room' : id === 2 ? 'Main Gate' : id === 3 ? 'Cooling Fan' : 'Sprinklers'}
+                        </p>
+                        <p className={cn("text-[10px] font-medium", relays[id] ? "text-indigo-400" : "text-slate-500")}>
+                          {relays[id] ? 'Active' : 'Inactive'}
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-slate-500 pl-3 border-l border-white/5">Bot: Execution confirmed.</div>
+                  ))}
+
+                  {/* Sequence Controls */}
+                  <div 
+                    onClick={() => toggleSequence(1)}
+                    className={cn(
+                      "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
+                      sequenceMode === 1 
+                        ? "bg-purple-500/20 border-purple-500/40 text-purple-200" 
+                        : "bg-white/5 border-white/10 text-slate-400"
+                    )}
+                  >
+                    <div className="flex justify-between">
+                      <Zap size={16} className={sequenceMode === 1 ? "text-purple-400" : "text-slate-600"} />
+                      <RotateCw size={14} className={cn(sequenceMode === 1 && "animate-spin")} />
+                    </div>
+                    <div className="mt-auto">
+                      <p className="text-[13px] font-bold">Seq: 1-2-3-4</p>
+                      <p className="text-[9px] opacity-60">Variation Mode 1</p>
+                    </div>
                   </div>
-                ))}
+
+                  <div 
+                    onClick={() => toggleSequence(2)}
+                    className={cn(
+                      "rounded-2xl p-4 flex flex-col justify-between transition-all duration-300 cursor-pointer border",
+                      sequenceMode === 2 
+                        ? "bg-amber-500/20 border-amber-500/40 text-amber-200" 
+                        : "bg-white/5 border-white/10 text-slate-400"
+                    )}
+                  >
+                    <div className="flex justify-between">
+                      <Zap size={16} className={sequenceMode === 2 ? "text-amber-400" : "text-slate-600"} />
+                      <RotateCw size={14} className={cn(sequenceMode === 2 && "animate-spin")} />
+                    </div>
+                    <div className="mt-auto">
+                      <p className="text-[13px] font-bold">Seq: 4-3-2-1</p>
+                      <p className="text-[9px] opacity-60">Variation Mode 2</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bottom Row */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pb-8">
+                <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-6">Activity Monitor</h3>
+                  <div className="space-y-4 max-h-[250px] overflow-y-auto pr-2 custom-scrollbar">
+                    {logs.map((log, i) => (
+                      <div key={i} className="flex gap-4 group items-center">
+                        <span className="text-[10px] font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded uppercase">{format(new Date(log.time), 'HH:mm:ss')}</span>
+                        <span className="text-[13px] text-slate-300 font-medium">{log.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-[#1c1c22] border border-white/10 rounded-2xl p-5 flex flex-col">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                      <MessageSquare size={16} className="text-white" />
+                    </div>
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Telegram Stream</span>
+                  </div>
+                  <div className="bg-black/40 rounded-xl p-4 font-mono text-[11px] flex-1 overflow-y-auto space-y-3 border border-white/5">
+                    {telegramLogs.slice(0, 5).map((log, i) => (
+                      <div key={i} className="space-y-1">
+                        <div className="text-indigo-400 font-bold flex justify-between">
+                          <span>&gt; {log.command}</span>
+                          <span className="text-[9px] text-slate-600">@{log.user}</span>
+                        </div>
+                        <div className="text-slate-500 pl-3 border-l border-white/5">Bot: Execution confirmed.</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'Analytics' && (
+            <div className="space-y-6">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 h-[450px] flex flex-col">
+                <div className="flex items-center justify-between mb-8">
+                  <h3 className="text-sm font-medium">Histori Suhu & Kelembaban (Detail)</h3>
+                  <div className="flex gap-4">
+                    <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                      <span className="w-2 h-2 rounded-full bg-indigo-500" /> Temp
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                      <span className="w-2 h-2 rounded-full bg-blue-400" /> Hum
+                    </div>
+                  </div>
+                </div>
+                <div className="flex-1 w-full min-h-0">
+                  <Line data={chartData} options={chartOptions} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Suhu Tertinggi</h4>
+                  <p className="text-3xl font-bold text-red-400">{history.length > 0 ? Math.max(...history.map(h => h.temp)).toFixed(1) : dht.temp}°C</p>
+                  <p className="text-[10px] text-slate-500 mt-2">Berdasarkan data sensor sesi aktif</p>
+                </div>
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Kelembaban Maksimum</h4>
+                  <p className="text-3xl font-bold text-blue-400">{history.length > 0 ? Math.max(...history.map(h => h.humidity)).toFixed(1) : dht.humidity}%</p>
+                  <p className="text-[10px] text-slate-500 mt-2">Berdasarkan pembacaan DHT11</p>
+                </div>
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Status Kenyamanan</h4>
+                  <p className="text-2xl font-bold text-emerald-400">Sangat Nyaman</p>
+                  <p className="text-[10px] text-slate-500 mt-2">Sistem beroperasi pada parameter ideal</p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {activeTab === 'Security' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-2xl p-6">
+                <h3 className="text-sm font-semibold mb-4 text-indigo-400">Voice Command Guide (Kontrol Suara)</h3>
+                <p className="text-sm text-slate-400 mb-6">Gunakan mikrofon pada navigasi atas dan katakan command berikut dalam bahasa Indonesia:</p>
+                
+                <div className="space-y-4">
+                  {[
+                    { cmd: '"Lampu [1-4] nyala"', desc: 'Menghidupkan relay sesuai nomor (contoh: "Lampu 1 nyala")' },
+                    { cmd: '"Lampu [1-4] mati"', desc: 'Mematikan relay sesuai nomor (contoh: "Lampu 3 mati")' },
+                    { cmd: '"Semua lampu nyala"', desc: 'Menyalakan seluruh relay secara bersamaan' },
+                    { cmd: '"Semua lampu mati"', desc: 'Mematikan semua relay secara instan' },
+                    { cmd: '"Variasi satu / dua"', desc: 'Mengaktifkan mode pergantian otomatis (Sequence)' },
+                    { cmd: '"Matikan variasi"', desc: 'Kembali ke mode kontrol normal/manual' }
+                  ].map((item, id) => (
+                    <div key={id} className="p-4 rounded-xl bg-white/5 border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span className="font-mono text-indigo-300 font-semibold">{item.cmd}</span>
+                      <span className="text-xs text-slate-400">{item.desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-[#1c1c22] border border-white/10 rounded-2xl p-5 flex flex-col">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                    <MessageSquare size={16} className="text-white" />
+                  </div>
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Telegram Control Logs</span>
+                </div>
+                <div className="bg-black/40 rounded-xl p-4 font-mono text-[11px] flex-1 overflow-y-auto space-y-3 border border-white/5">
+                  {telegramLogs.map((log, i) => (
+                    <div key={i} className="space-y-1">
+                      <div className="text-indigo-400 font-bold flex justify-between">
+                        <span>&gt; {log.command}</span>
+                        <span className="text-[9px] text-slate-600">@{log.user}</span>
+                      </div>
+                      <div className="text-slate-500 pl-3 border-l border-white/5">Bot: Execution confirmed.</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer info */}
