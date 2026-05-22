@@ -328,17 +328,37 @@ api.get('/setup-webhook', async (req, res) => {
   }
 
   try {
-    // If polling is currently active, stop it before switching to webhook mode
+    let host = req.headers.host || "";
+    // Remove any port specification (like :3000 or :5173) to ensure it uses the standard HTTPS port (443) which Telegram webhooks strictly restrict to (80, 88, 443, 8443)
+    if (host.includes(":")) {
+      host = host.split(":")[0];
+    }
+    const webhookUrl = `https://${host}/api/telegram-webhook`;
+    
+    console.log(`📡 [TELEGRAM] Verifying webhook registration parameters... Target: ${webhookUrl}`);
+    
+    // Check the current webhook info from Telegram servers to prevent useless requests that trigger 429
+    const info = await bot.getWebHookInfo().catch((err) => {
+      console.warn('⚠️ [TELEGRAM] Error fetching webhook info from Telegram API:', err.message || err);
+      return null;
+    });
+
+    if (info && info.url === webhookUrl) {
+      console.log(`📡 [TELEGRAM] Webhook is already perfectly configured to ${webhookUrl}. Skipping registration call to avoid 429.`);
+      iotState.botStatus = 'online (webhook)';
+      return res.json({ 
+        status: 'ok', 
+        webhookUrl, 
+        message: 'Telegram Webhook already registered exactly as requested!' 
+      });
+    }
+
+    // Stop active polling if it is currently running before switching to webhook mode
     if (bot.isPolling()) {
       console.log('ℹ️ [TELEGRAM] Active polling detected. Stopping polling for webhook transition...');
       await bot.stopPolling().catch(() => {});
     }
 
-    const host = req.headers.host;
-    // Determine proxy/original protocol, default to https for security of webhooks
-    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const webhookUrl = `${protocol}://${host}/api/telegram-webhook`;
-    
     console.log(`📡 [TELEGRAM] Registering webhook endpoint to ${webhookUrl}...`);
     await bot.setWebHook(webhookUrl);
     
@@ -346,7 +366,14 @@ api.get('/setup-webhook', async (req, res) => {
     res.json({ status: 'ok', webhookUrl, message: 'Telegram Webhook registered successfully! Bot switched to Webhook mode.' });
   } catch (error: any) {
     console.error('[TELEGRAM] Webhook registration failed:', error);
-    res.status(500).json({ status: 'error', message: error.message || 'Unknown error' });
+    
+    if (error.message && (error.message.includes('429') || error.message.includes('Too Many Requests'))) {
+      return res.status(429).json({ 
+        status: 'error', 
+        message: 'Telegram API rate limit (429): Too many requests. Skipping registration attempts; using active webhook setup.' 
+      });
+    }
+    res.status(500).json({ status: 'error', message: error.message || 'Unknown error during webhook registration' });
   }
 });
 
