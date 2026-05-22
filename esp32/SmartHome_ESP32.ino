@@ -45,6 +45,7 @@ WebServer server(80);
 void handleStatus();
 void handleRelayControl();
 void handleSpeedControl();
+void handleSequenceControl();
 
 void setup() {
   Serial.begin(115200);
@@ -69,6 +70,7 @@ void setup() {
   server.on("/api/status", handleStatus);
   server.on("/api/relay", handleRelayControl);
   server.on("/api/speed", handleSpeedControl);
+  server.on("/api/sequence", handleSequenceControl);
   
   // Custom CORS Header Handling
   server.enableCORS(true);
@@ -92,7 +94,7 @@ unsigned long lastUpdate = 0;
 const int updateInterval = 10000; // Kirim data sensor setiap 10 detik
 
 unsigned long lastRelayCheck = 0;
-const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik untuk sync cloud
+const int relayCheckInterval = 3000; // Cek status relay setiap 3 detik untuk sync cloud agar ESP32 lancar & tidak lag/disconnect
 
 int currentSequence = 0;
 unsigned long lastSeqStep = 0;
@@ -160,6 +162,27 @@ void handleSpeedControl() {
   }
 }
 
+// Handler untuk kontrol pola variasi instan dari web dashboard lokal (CORS-enabled)
+void handleSequenceControl() {
+  if (server.hasArg("mode")) {
+    int mode = server.arg("mode").toInt();
+    if (mode == 0 || mode == 1 || mode == 2) {
+      currentSequence = mode;
+      seqStep = 0;
+      if (currentSequence == 0) {
+        allRelaysOff();
+      }
+      Serial.print("⚡ LAN Action: Pola variasi diubah ke ");
+      Serial.println(currentSequence);
+      server.send(200, "application/json", "{\"status\":\"ok\",\"sequence\":" + String(currentSequence) + "}");
+    } else {
+      server.send(400, "application/json", "{\"error\":\"Invalid mode\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"error\":\"Missing mode query param\"}");
+  }
+}
+
 void loop() {
   server.handleClient(); // Tangani request dari browser secara instan (Direct LAN)
   
@@ -215,6 +238,7 @@ void checkRelayStatus() {
   String url = String(serverUrl) + "/api/relays";
   
   http.begin(url);
+  http.setTimeout(1500); // Batasi waktu tunggu agar tidak membekukan Web Server lokal
   int httpCode = http.GET();
 
   if (httpCode == 200) {
@@ -281,6 +305,7 @@ void sendSensorData() {
   String url = String(serverUrl) + "/api/update-sensor";
   
   http.begin(url);
+  http.setTimeout(1500); // Batasi waktu tunggu agar tidak membekukan Web Server lokal
   http.addHeader("Content-Type", "application/json");
 
   String jsonPayload = "{\"temp\":" + String(t) + ",\"humidity\":" + String(h) + "}";

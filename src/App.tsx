@@ -220,19 +220,49 @@ export default function App() {
     }
   };
 
-  const toggleSequence = async (mode: number) => {
-    const newMode = sequenceMode === mode ? 0 : mode;
+  const updateSequence = async (newMode: number) => {
     lastSequenceToggleTimeRef.current = Date.now();
     setSequenceMode(newMode);
 
-    try {
-      const res = await fetch(`/api/sequence/${newMode}`);
-      if (res.ok) {
-        addNotification(`Variasi: ${newMode === 0 ? 'Mati' : newMode === 1 ? 'Pola 1-2-3-4' : 'Pola 4-3-2-1'}`);
+    let success = false;
+
+    // 1. Coba koneksi local LAN direct IP terlebih dahulu jika diaktifkan
+    if (useDirectIp && espLocalIp) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const localRes = await fetch(`http://${espLocalIp}/api/sequence?mode=${newMode}`, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (localRes.ok) {
+          success = true;
+          addNotification(`[Lokal Direct] Variasi: ${newMode === 0 ? 'Mati' : newMode === 1 ? 'Pola 1-2-3-4' : 'Pola 4-3-2-1'} (Respons Instan)`);
+          
+          // Kirim background sync ke cloud
+          fetch(`/api/sequence/${newMode}`).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('Direct sequence control failed, falling back to cloud...', err);
       }
-    } catch (err) {
-      console.error('Sequence toggle error:', err);
     }
+
+    // 2. Fallback via Cloud API
+    if (!success) {
+      try {
+        const res = await fetch(`/api/sequence/${newMode}`);
+        if (res.ok) {
+          addNotification(`Variasi: ${newMode === 0 ? 'Mati' : newMode === 1 ? 'Pola 1-2-3-4' : 'Pola 4-3-2-1'}`);
+        }
+      } catch (err) {
+        console.error('Sequence toggle error:', err);
+      }
+    }
+  };
+
+  const toggleSequence = async (mode: number) => {
+    const newMode = sequenceMode === mode ? 0 : mode;
+    await updateSequence(newMode);
   };
 
   const adjustSequenceSpeed = async (delayVal: number) => {
@@ -345,17 +375,7 @@ export default function App() {
   };
 
   const setSequenceDirect = async (mode: number) => {
-    lastSequenceToggleTimeRef.current = Date.now();
-    setSequenceMode(mode);
-
-    try {
-      const res = await fetch(`/api/sequence/${mode}`);
-      if (res.ok) {
-        addNotification(`Variasi: ${mode === 0 ? 'Mati' : mode === 1 ? 'Pola 1-2-3-4' : 'Pola 4-3-2-1'}`);
-      }
-    } catch (err) {
-      console.error('Sequence toggle error:', err);
-    }
+    await updateSequence(mode);
   };
 
   const startVoiceControl = () => {

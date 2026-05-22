@@ -120,13 +120,39 @@ const processTelegramCommand = async (text: string, chat_id: number, username: s
 
 if (isBotConfigured && process.env.NODE_ENV !== 'test') {
   try {
-    // Only use polling in local development
-    const usePolling = process.env.NODE_ENV !== 'production' && !process.env.VERCEL;
-    
-    bot = new TelegramBot(BOT_TOKEN as string, { polling: usePolling });
-    iotState.botStatus = 'online';
+    // Only use webhook in the Vercel serverless environment.
+    // In local development or Cloud Run containers (AI Studio), use polling as it is highly stable and does not require a public URL.
+    const usePolling = !process.env.VERCEL;
     
     if (usePolling) {
+      // Do not auto-start polling on initialization to prevent conflict with any existing webhook
+      bot = new TelegramBot(BOT_TOKEN as string, { polling: false });
+      iotState.botStatus = 'online';
+      
+      // Delete any custom webhooks, then start polling to clear 409 Conflict errors
+      bot.deleteWebHook()
+        .then(() => {
+          console.log('ℹ️ [TELEGRAM] Webhook cleared. Starting local/container polling...');
+          return bot?.startPolling();
+        })
+        .then(() => {
+          console.log('🟢 [TELEGRAM] Polling successfully started.');
+        })
+        .catch((err) => {
+          console.error('[TELEGRAM] Error clearing webhook or starting polling:', err);
+        });
+        
+      // Handle polling error gracefully to avoid infinite loops
+      bot.on('polling_error', (error: any) => {
+        const errMsg = error.message || '';
+        if (errMsg.includes('409') || errMsg.includes('Conflict')) {
+          console.log('ℹ️ [TELEGRAM] Polling conflict: Active webhook detected. Temporarily stopping polling.');
+          bot?.stopPolling().catch(() => {});
+        } else {
+          console.error('[TELEGRAM] Polling Error:', error);
+        }
+      });
+
       bot.on('message', (msg) => {
         if (msg.text) {
           processTelegramCommand(
@@ -137,7 +163,10 @@ if (isBotConfigured && process.env.NODE_ENV !== 'test') {
         }
       });
     } else {
-      // Vercel or production: dynamically register the Telegram Webhook!
+      bot = new TelegramBot(BOT_TOKEN as string, { polling: false });
+      iotState.botStatus = 'online';
+      
+      // Vercel or production serverless: dynamically register the Telegram Webhook!
       const vercelHost = process.env.VERCEL_URL;
       if (vercelHost) {
         const webhookUrl = vercelHost.startsWith('http') 
@@ -283,7 +312,6 @@ api.get('/', (req, res) => {
 
 // API mounting
 app.use('/api', api);
-app.use('/', api);
 
 // Production: Serve static files from root
 if (process.env.NODE_ENV === 'production') {
