@@ -723,7 +723,7 @@ export default function App() {
         <div className="p-8 space-y-6 max-w-7xl mx-auto">
           {activeTab === 'Dashboard' && (
             <>
-              {/* Top Row: Metrics */}
+              {/* Top Row: Metrics (Temp, Humidity, and Direct LAN Panel next to each other) */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
                   <div className="flex justify-between items-start mb-4">
@@ -747,34 +747,11 @@ export default function App() {
                   <div className="text-xs text-slate-500 font-medium">Air Humidity Index</div>
                 </div>
 
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400">
-                      <MessageSquare size={24} />
-                    </div>
-                    <span className="text-[10px] font-bold text-amber-400 py-1 px-2 rounded bg-amber-500/10 uppercase">Active</span>
-                  </div>
-                  <div className="text-3xl font-bold mb-1">{telegramLogs.length}</div>
-                  <div className="text-xs text-slate-500 font-medium">Daily Telegram Triggers</div>
-                </div>
-
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
-                      <Cpu size={24} />
-                    </div>
-                    <span className="text-[10px] font-bold text-indigo-400 py-1 px-2 rounded bg-indigo-500/10 uppercase">Healthy</span>
-                  </div>
-                  <div className="text-3xl font-bold mb-1">99.8%</div>
-                  <div className="text-xs text-slate-500 font-medium">ESP32 Connection Health</div>
-                </div>
-              </div>
-
-              {/* Direct LAN Setup Panel */}
-              <div className="bg-gradient-to-r from-indigo-950/40 via-slate-900/40 to-slate-900/40 border border-white/10 rounded-2xl p-6 relative overflow-hidden backdrop-blur-sm">
-                <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none" />
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                  <div className="space-y-1">
+                {/* Direct LAN Setup Panel */}
+                <div className="lg:col-span-2 bg-gradient-to-br from-indigo-950/40 via-slate-900/40 to-slate-900/40 border border-white/10 rounded-2xl p-5 relative overflow-hidden backdrop-blur-sm flex flex-col justify-between min-h-[140px]">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl pointer-events-none" />
+                  
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
                     <div className="flex items-center gap-2">
                       <span className="flex h-2 w-2 relative">
                         <span className={cn(
@@ -786,17 +763,14 @@ export default function App() {
                           directConnected ? "bg-emerald-500" : "bg-rose-500"
                         )} />
                       </span>
-                      <h3 className="text-sm font-semibold tracking-wide text-white uppercase">⚡ Koneksi Lokal Direct LAN (Delay ~3ms)</h3>
+                      <h3 className="text-xs font-bold tracking-wider text-white uppercase flex items-center gap-1.5">
+                        ⚡ Koneksi Lokal Direct LAN
+                      </h3>
                     </div>
-                    <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-                      Hubungkan peramban langsung ke IP lokal ESP32 Anda untuk bypass API cloud Vercel/Internet. Saklar lampu akan merespons instan seketika dalam beberapa milidetik!
-                    </p>
-                  </div>
 
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
                     {/* Switch Mode toggle */}
-                    <div className="flex items-center gap-3 bg-black/20 px-4 py-2 rounded-xl border border-white/5">
-                      <span className="text-xs text-slate-300 font-medium whitespace-nowrap">Mode Direct IP:</span>
+                    <div className="flex items-center gap-2 bg-black/30 px-3 py-1.5 rounded-xl border border-white/5 self-start sm:self-auto">
+                      <span className="text-[10px] text-slate-300 font-medium whitespace-nowrap">Mode Direct IP:</span>
                       <button
                         onClick={() => {
                           const nextVal = !useDirectIp;
@@ -805,51 +779,51 @@ export default function App() {
                           addNotification(`Mode Direct IP: ${nextVal ? 'DIKENDALIKAN LOKAL' : 'KEMBALI KE CLOUD'}`);
                         }}
                         className={cn(
-                          "w-12 h-6 rounded-full relative transition-colors duration-300 border border-white/10",
+                          "w-10 h-5 rounded-full relative transition-all duration-300 border border-white/10",
                           useDirectIp ? "bg-indigo-600" : "bg-slate-800"
                         )}
                       >
                         <span className={cn(
-                          "absolute top-0.5 left-0.5 w-[18px] h-[18px] bg-white rounded-full transition-all duration-300 shadow",
-                          useDirectIp ? "translate-x-6" : "translate-x-0"
+                          "absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full transition-all duration-300 shadow",
+                          useDirectIp ? "translate-x-5" : "translate-x-0"
                         )} />
                       </button>
                     </div>
-
-                    {/* IP input and save button */}
-                    <div className="flex items-center gap-2">
-                      <div className="relative">
-                        <span className="absolute left-3 top-2 text-xs text-slate-500 font-mono">http://</span>
-                        <input
-                          type="text"
-                          placeholder="Contoh: 192.168.1.15"
-                          value={espLocalIp}
-                          onChange={(e) => {
-                            const val = e.target.value.trim();
-                            setEspLocalIp(val);
-                            localStorage.setItem('esp_local_ip', val);
-                          }}
-                          className="pl-14 pr-3 py-2 text-xs bg-slate-900/80 border border-white/10 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none w-48 text-indigo-200 font-mono"
-                        />
-                      </div>
-                      <button
-                        onClick={() => {
-                          fetchData();
-                          addNotification("Mengetes koneksi lokal ke ESP32...");
-                        }}
-                        className="p-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors self-stretch sm:self-auto shadow-lg shadow-indigo-600/10 active:scale-95"
-                      >
-                        <RotateCw size={14} className={cn(useDirectIp && "animate-spin")} />
-                        <span>Tes</span>
-                      </button>
-                    </div>
                   </div>
-                </div>
 
-                {/* Additional Info Helper */}
-                <div className="mt-3 text-[10px] text-slate-500 flex items-center gap-1.5 border-t border-white/5 pt-3">
-                  <span className="font-semibold text-indigo-400 font-mono">Status Koneksi LAN:</span>
-                  <span>{directConnected ? `🟢 Terhubung langsung ke http://${espLocalIp} (Delay ~3ms)` : `🔴 Belum terhubung lokal (Gunakan input IP ESP32 Anda & pastikan satu jaringan WiFi)`}</span>
+                  {/* Input IP and Test Button */}
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <span className="absolute left-3 top-2 text-[10px] text-indigo-500/60 font-mono">http://</span>
+                      <input
+                        type="text"
+                        placeholder="IP ESP32 (e.g. 192.168.1.15)"
+                        value={espLocalIp}
+                        onChange={(e) => {
+                          const val = e.target.value.trim();
+                          setEspLocalIp(val);
+                          localStorage.setItem('esp_local_ip', val);
+                        }}
+                        className="w-full pl-12 pr-3 py-1.5 text-xs bg-slate-950/60 border border-white/10 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none text-indigo-200 font-mono tracking-wide"
+                      />
+                    </div>
+                    <button
+                      onClick={() => {
+                        fetchData();
+                        addNotification("Mengetes koneksi lokal ke ESP32...");
+                      }}
+                      className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-lg shadow-indigo-600/20 active:scale-95 whitespace-nowrap"
+                    >
+                      <RotateCw size={12} className={cn(useDirectIp && "animate-spin")} />
+                      <span>Tes IP</span>
+                    </button>
+                  </div>
+
+                  {/* Connection Status Footer */}
+                  <div className="mt-2 text-[10px] text-slate-400 flex items-center gap-1.5 border-t border-white/5 pt-1.5">
+                    <span className="font-semibold text-indigo-400 font-mono">Status LAN:</span>
+                    <span className="truncate">{directConnected ? `🟢 Terhubung langsung ke http://${espLocalIp} (~3ms)` : `🔴 Belum terhubung (Gunakan input IP & pastikan satu WiFi)`}</span>
+                  </div>
                 </div>
               </div>
 
