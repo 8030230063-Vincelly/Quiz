@@ -104,6 +104,7 @@ export default function App() {
   });
   const [directConnected, setDirectConnected] = useState<boolean>(false);
   const [sequenceDelay, setSequenceDelay] = useState<number>(200);
+  const localFailureCountRef = useRef<number>(0);
 
 
 
@@ -117,7 +118,7 @@ export default function App() {
     if (useDirectIp && espLocalIp) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout untuk mencegah false alarm saat ESP32 sibuk
         const localRes = await fetch(`http://${espLocalIp}/api/status`, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (localRes.ok) {
@@ -136,24 +137,92 @@ export default function App() {
             relays: localStatus.relays,
             sequenceDelay: localStatus.sequenceDelay
           };
+          localFailureCountRef.current = 0; // Reset counter kegagalan jika sukses
           setDirectConnected(true);
           localSuccess = true;
+
+          // Sync local sensor reading to cloud in background so Telegram bot is always up-to-date
+          fetch('/api/update-sensor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ temp: localStatus.temp, humidity: localStatus.humidity })
+          }).catch(() => {});
+        } else {
+          throw new Error('Local status check failed');
         }
       } catch (err) {
-        setDirectConnected(false);
+        localFailureCountRef.current++;
+        // Hanya ganti status menjadi terputus jika gagal berturut-turut sebanyak 3 kali (mencegah kedipan)
+        if (localFailureCountRef.current >= 3) {
+          setDirectConnected(false);
+        }
       }
     }
 
     try {
       if (localSuccess) {
-        // If local succeeded, we still grab the logs from cloud server in background
-        const logsRes = await fetch('/api/logs');
-        if (logsRes.ok) {
-          logData = await logsRes.json();
+        // Grab logs AND cloud relays to perform a bidirectional synchronization
+        try {
+          const [logsRes, relaysRes] = await Promise.all([
+            fetch('/api/logs'),
+            fetch('/api/relays')
+          ]);
+          
+          if (logsRes.ok) logData = await logsRes.json();
+          if (relaysRes.ok && relayData) {
+            const cloudRelayData = await relaysRes.json();
+            const now = Date.now();
+            
+            // Bidirectional synchronization:
+            // 1. Sync Sequence Mode
+            if (relayData.sequence !== cloudRelayData.sequence) {
+              const sequenceAge = now - lastSequenceToggleTimeRef.current;
+              if (sequenceAge <= 4000) {
+                // Browser user just changed it locally, so local is truth. Sync to Cloud!
+                fetch(`/api/sequence/${relayData.sequence}`).catch(() => {});
+              } else {
+                // Telegram/external changed it on Cloud, so Cloud is truth. Sync to ESP32!
+                fetch(`http://${espLocalIp}/api/sequence?mode=${cloudRelayData.sequence}`).catch(() => {});
+                relayData.sequence = cloudRelayData.sequence;
+              }
+            }
+
+            // 2. Sync Individual Relays
+            const syncPromises: Promise<any>[] = [];
+            for (let i = 1; i <= 4; i++) {
+              const localState = !!relayData.relays[i.toString()];
+              const cloudState = !!cloudRelayData.relays[i.toString()];
+              
+              if (localState !== cloudState) {
+                const relayAge = now - (lastToggleTimeRef.current[i] || 0);
+                if (relayAge <= 4000) {
+                  // Browser user just toggled it locally, so local is truth. Sync to Cloud!
+                  syncPromises.push(
+                    fetch(`/api/relay/${i}/${localState ? 'on' : 'off'}`)
+                  );
+                } else {
+                  // Telegram/external changed it on Cloud, so Cloud is truth. Sync to ESP32!
+                  syncPromises.push(
+                    fetch(`http://${espLocalIp}/api/relay?id=${i}&state=${cloudState ? 'on' : 'off'}`)
+                  );
+                  relayData.relays[i.toString()] = cloudState;
+                }
+              }
+            }
+            if (syncPromises.length > 0) {
+              Promise.all(syncPromises).catch(err => console.error("Direct IP Sync Fail:", err));
+            }
+          }
+        } catch (syncErr) {
+          console.error("Cloud background sync error during Direct IP mode:", syncErr);
         }
       } else {
         // Fallback or Cloud/Standard Mode
-        setDirectConnected(false);
+        // Only set directconnected to false if we are actually in direct IP mode AND fail count >= 3, or if we are not using direct IP mode
+        if (!useDirectIp || !espLocalIp || localFailureCountRef.current >= 3) {
+          setDirectConnected(false);
+        }
+
         const endpoints = ['/api/dht', '/api/relays', '/api/logs'];
         const responses = await Promise.all(endpoints.map(e => fetch(e)));
 
@@ -230,7 +299,7 @@ export default function App() {
     if (useDirectIp && espLocalIp) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
         const localRes = await fetch(`http://${espLocalIp}/api/sequence?mode=${newMode}`, {
           signal: controller.signal
         });
@@ -273,7 +342,7 @@ export default function App() {
     if (useDirectIp && espLocalIp) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
         const localRes = await fetch(`http://${espLocalIp}/api/speed?delay=${delayVal}`, {
           signal: controller.signal
         });
@@ -351,7 +420,7 @@ export default function App() {
     if (useDirectIp && espLocalIp) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
         const localRes = await fetch(`http://${espLocalIp}/api/relay?id=${id}&state=${newState}`, {
           signal: controller.signal
         });

@@ -40,6 +40,21 @@ let iotState = {
 // will kill the process. Use Webhooks for production bot logic.
 let bot: TelegramBot | null = null;
 
+// Helper to format time for Telegram messages
+const formatTime = (date: Date | string) => {
+  try {
+    const d = typeof date === 'string' ? new Date(date) : date;
+    return d.toLocaleTimeString('id-ID', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      timeZone: 'Asia/Jakarta'
+    }) + ' WIB';
+  } catch (err) {
+    return 'Waktu Tidak Valid';
+  }
+};
+
 // Unified Telegram command processor
 const processTelegramCommand = async (text: string, chat_id: number, username: string) => {
   const cleanText = text.toLowerCase().trim();
@@ -55,17 +70,25 @@ const processTelegramCommand = async (text: string, chat_id: number, username: s
   if (cleanText === '/start') {
     const welcomeMsg = 
       "👋 *Selamat datang di Bot SmartHome IoT ESP32!*\n\n" +
-      "Berikut daftar perintah (command) singkat yang bisa Anda gunakan:\n" +
-      "🌡️ /status - Cek sensor DHT11 & status semua Relay\n" +
-      "💡 /r1_on s.d /r4_on - Nyalakan Relay 1 s.d 4\n" +
-      "📴 /r1_off s.d /r4_off - Matikan Relay 1 s.d 4\n" +
+      "Berikut daftar perintah (command) utama yang bisa Anda gunakan:\n" +
+      "🌡️ /dht - Cek kondisi suhu & kelembaban DHT11\n" +
+      "📊 /status - Cek status sensor, relay, & koneksi lengkap\n" +
+      "💡 /r1on s.d /r4on - Nyalakan Relay 1 s.d 4\n" +
+      "📴 /r1off s.d /r4off - Matikan Relay 1 s.d 4\n" +
+      "⚡ /v1 - Jalankan Pola Variasi 1 (1-2-3-4)\n" +
+      "⚡ /v2 - Jalankan Pola Variasi 2 (4-3-2-1)\n" +
+      "⏹️ /vstop - Hentikan pola variasi relay\n" +
       "🔄 /semuaon - Nyalakan semua relay sekaligus\n" +
-      "❌ /semuaoff - Matikan semua relay & variasi pola\n" +
-      "⚡ /variasi1 - Jalankan Pola Variasi 1-2-3-4\n" +
-      "⚡ /variasi2 - Jalankan Pola Variasi 4-3-2-1\n" +
-      "⏹️ /variasioff - Hentikan pola variasi relay\n\n" +
-      "💡 _Anda juga bisa menggunakan format /relay1on atau /relay1off jika diinginkan!_";
+      "❌ /semuaoff - Matikan semua relay & variasi\n\n" +
+      "💡 _Format alternatif seperti /r1_on, /r1_off, /relay1on, atau /variasioff juga tetap didukung!_";
     await bot?.sendMessage(chat_id, welcomeMsg, { parse_mode: 'Markdown' });
+  } else if (cleanText === '/dht') {
+    const dhtMsg = 
+      `🌡️ *Pembacaan Sensor DHT11:* \n\n` +
+      `Suhu: *${iotState.dht.temp.toFixed(1)}°C*\n` +
+      `Kelembaban: *${iotState.dht.humidity.toFixed(1)}%*\n\n` +
+      `⏰ _Pembaruan terakhir: ${formatTime(iotState.dht.lastUpdate)}_`;
+    await bot?.sendMessage(chat_id, dhtMsg, { parse_mode: 'Markdown' });
   } else if (cleanText === '/status') {
     const statusMsg = 
       `📊 *SMARTHOME STATUS REPORT* 📊\n\n` +
@@ -89,15 +112,15 @@ const processTelegramCommand = async (text: string, chat_id: number, username: s
     iotState.sequenceMode = 0;
     addLog(`Telegram: All relays turned OFF`);
     await bot?.sendMessage(chat_id, "🔴 Semua relay dan variasi telah dimatikan!");
-  } else if (cleanText === '/variasi1') {
+  } else if (cleanText === '/v1' || cleanText === '/variasi1') {
     iotState.sequenceMode = 1;
     addLog(`Telegram: Sequence mode 1 started`);
     await bot?.sendMessage(chat_id, "🔄 Pola Variasi 1 (1-2-3-4) AKTIF!");
-  } else if (cleanText === '/variasi2') {
+  } else if (cleanText === '/v2' || cleanText === '/variasi2') {
     iotState.sequenceMode = 2;
     addLog(`Telegram: Sequence mode 2 started`);
     await bot?.sendMessage(chat_id, "🔄 Pola Variasi 2 (4-3-2-1) AKTIF!");
-  } else if (cleanText === '/variasioff') {
+  } else if (cleanText === '/vstop' || cleanText === '/variasioff') {
     iotState.sequenceMode = 0;
     addLog(`Telegram: Sequence mode stopped`);
     await bot?.sendMessage(chat_id, "⏹️ Pola Variasi TELAH DIMATIKAN!");

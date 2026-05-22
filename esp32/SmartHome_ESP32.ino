@@ -47,6 +47,7 @@ void handleStatus();
 void handleRelayControl();
 void handleSpeedControl();
 void handleSequenceControl();
+void sendTelegramMessage(String message);
 
 void setup() {
   Serial.begin(115200);
@@ -102,6 +103,7 @@ unsigned long lastSeqStep = 0;
 int seqStep = 0;
 int sequenceDelay = 200; // Delay pola variasi relay (ms)
 unsigned long lastLanActivity = 0; // Waktu aktivitas LAN lokal terakhir untuk menghindari tabrakan sync (race condition)
+String pendingTelegramMsg = "";    // Antrian pesan Telegram agar pengiriman tidak memblokir respon HTTP lokal
 
 // Handler untuk memberikan status pembacaan sensor dan relay langsung via LAN (CORS-enabled)
 void handleStatus() {
@@ -124,6 +126,8 @@ void handleStatus() {
 
   String response;
   serializeJson(doc, response);
+
+  lastLanActivity = millis(); // Perbarui log aktivitas lokal untuk menghindari tabrakan sync (race condition)
   server.send(200, "application/json", response);
 }
 
@@ -139,9 +143,13 @@ void handleRelayControl() {
     else if (id == 3) digitalWrite(RELAY3_PIN, pinValue);
     else if (id == 4) digitalWrite(RELAY4_PIN, pinValue);
 
+    String statusText = (pinValue == LOW) ? "MENYALA 🟢" : "MATI 🔴";
     Serial.print("⚡ LAN Action: Relay ");
     Serial.print(id);
-    Serial.println(pinValue == LOW ? " dinyalakan (ON)" : " dimatikan (OFF)");
+    Serial.println(" -> " + statusText);
+
+    // Antrikan pengiriman notifikasi ke Telegram tanpa memblokir respon HTTP instan LAN
+    pendingTelegramMsg = "🔌 *[ESP32 Direct]* Relay " + String(id) + " diubah via LAN menjadi *" + statusText + "*";
 
     lastLanActivity = millis(); // Perbarui log aktivitas lokal
     server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Relay updated directly via LAN\"}");
@@ -176,8 +184,12 @@ void handleSequenceControl() {
       if (currentSequence == 0) {
         allRelaysOff();
       }
-      Serial.print("⚡ LAN Action: Pola variasi diubah ke ");
-      Serial.println(currentSequence);
+      String patternName = (currentSequence == 0) ? "NONAKTIF ⏹️" : (currentSequence == 1) ? "Pola 1-2-3-4 🔄" : "Pola 4-3-2-1 🔄";
+      Serial.print("⚡ LAN Action: Pola variasi diubah ke " + patternName);
+      
+      // Antrikan pengiriman notifikasi ke Telegram tanpa memblokir respon HTTP instan LAN
+      pendingTelegramMsg = "⚡ *[ESP32 Direct]* Pola Variasi diubah via LAN menjadi *" + patternName + "*";
+
       lastLanActivity = millis(); // Perbarui log aktivitas lokal untuk mencegah overwrite delay
       server.send(200, "application/json", "{\"status\":\"ok\",\"sequence\":" + String(currentSequence) + "}");
     } else {
@@ -192,6 +204,11 @@ void loop() {
   server.handleClient(); // Tangani request dari browser secara instan (Direct LAN)
   
   if (WiFi.status() == WL_CONNECTED) {
+    // Jalankan pengiriman pesan Telegram jika ada antrian secara asinkron (diluar request handler local)
+    if (pendingTelegramMsg != "") {
+      sendTelegramMessage(pendingTelegramMsg);
+      pendingTelegramMsg = ""; // Kosongkan antrian setelah dikirim
+    }
     // Sync status relay dengan Cloud Server
     // Berikan jeda grace period jika baru saja ada aktivitas LAN lokal agar sinkronisasi tidak tabrakan (race condition)
     if (millis() - lastLanActivity > 8000) {
@@ -335,6 +352,40 @@ void sendSensorData() {
     Serial.println(httpCode);
   } else {
     Serial.println("🚀 Data sensor berhasil dikirim ke Cloud Server!");
+  }
+  http.end();
+}
+
+// Fungsi asinkron untuk mengirim pesan/alert Telegram secara aman & langsung dari ESP32
+void sendTelegramMessage(String message) {
+  if (strcmp(botToken, "YOUR_TELEGRAM_BOT_TOKEN") == 0 || strcmp(chatID, "YOUR_TELEGRAM_CHAT_ID") == 0) {
+    Serial.println("ℹ️ [TELEGRAM ESP32] Bot Token / Chat ID belum dikonfigurasi di ESP32. Kirim pesan dilewati.");
+    return;
+  }
+  
+  WiFiClientSecure client;
+  client.setInsecure(); // Mengabaikan validasi rantai sertifikat SSL agar hemat memori & hemat CPU (super cepat!)
+  HTTPClient http;
+  
+  String url = "https://api.telegram.org/bot" + String(botToken) + "/sendMessage";
+  http.begin(client, url);
+  http.setTimeout(2500); // Batasi timeout agar tidak menggantung program
+  http.addHeader("Content-Type", "application/json");
+  
+  DynamicJsonDocument doc(256);
+  doc["chat_id"] = chatID;
+  doc["text"] = message;
+  doc["parse_mode"] = "Markdown";
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  int httpCode = http.POST(payload);
+  if (httpCode == 200) {
+    Serial.println("🚀 [TELEGRAM ESP32] Pesan berhasil dikirim langsung dari ESP32!");
+  } else {
+    Serial.print("⚠️ [TELEGRAM ESP32] Gagal mengirim pesan. Code: ");
+    Serial.println(httpCode);
   }
   http.end();
 }
