@@ -165,18 +165,7 @@ if (isBotConfigured && process.env.NODE_ENV !== 'test') {
     } else {
       bot = new TelegramBot(BOT_TOKEN as string, { polling: false });
       iotState.botStatus = 'online';
-      
-      // Vercel or production serverless: dynamically register the Telegram Webhook!
-      const vercelHost = process.env.VERCEL_URL;
-      if (vercelHost) {
-        const webhookUrl = vercelHost.startsWith('http') 
-          ? `${vercelHost}/api/telegram-webhook` 
-          : `https://${vercelHost}/api/telegram-webhook`;
-        
-        bot.setWebHook(webhookUrl)
-          .then(() => console.log(`[TELEGRAM] Webhook successfully registered to ${webhookUrl}`))
-          .catch((err) => console.error(`[TELEGRAM] Failed to set webhook to ${webhookUrl}:`, err));
-      }
+      console.log('ℹ️ [TELEGRAM] Serverless bot initialized. Webhook registration managed dynamically.');
     }
   } catch (err) {
     iotState.botStatus = 'error';
@@ -288,6 +277,33 @@ api.get('/logs', (req, res) => {
     activity: iotState.logs,
     telegram: iotState.telegramLogs
   });
+});
+
+api.get('/setup-webhook', async (req, res) => {
+  if (!bot) {
+    return res.status(400).json({ status: 'error', message: 'Telegram bot not configured or token missing' });
+  }
+  
+  const usePolling = !process.env.VERCEL;
+  if (usePolling) {
+    return res.json({ status: 'ok', message: 'Running on local/container container. Polling has been automatically enabled instead.' });
+  }
+
+  try {
+    const host = req.headers.host;
+    // Vercel endpoints run on HTTPS securely
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const webhookUrl = `${protocol}://${host}/api/telegram-webhook`;
+    
+    console.log(`[TELEGRAM] Registering serverless webhook to ${webhookUrl}...`);
+    await bot.setWebHook(webhookUrl);
+    
+    iotState.botStatus = 'online';
+    res.json({ status: 'ok', webhookUrl, message: 'Webhook registered successfully on serverless Vercel' });
+  } catch (error: any) {
+    console.error('[TELEGRAM] Webhook registration failed:', error);
+    res.status(500).json({ status: 'error', message: error.message || 'Unknown error' });
+  }
 });
 
 api.post('/telegram-webhook', async (req, res) => {

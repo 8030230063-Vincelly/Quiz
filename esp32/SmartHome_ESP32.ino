@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -100,6 +101,7 @@ int currentSequence = 0;
 unsigned long lastSeqStep = 0;
 int seqStep = 0;
 int sequenceDelay = 200; // Delay pola variasi relay (ms)
+unsigned long lastLanActivity = 0; // Waktu aktivitas LAN lokal terakhir untuk menghindari tabrakan sync (race condition)
 
 // Handler untuk memberikan status pembacaan sensor dan relay langsung via LAN (CORS-enabled)
 void handleStatus() {
@@ -141,6 +143,7 @@ void handleRelayControl() {
     Serial.print(id);
     Serial.println(pinValue == LOW ? " dinyalakan (ON)" : " dimatikan (OFF)");
 
+    lastLanActivity = millis(); // Perbarui log aktivitas lokal
     server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Relay updated directly via LAN\"}");
   } else {
     server.send(400, "application/json", "{\"error\":\"Missing arguments id or state\"}");
@@ -153,6 +156,7 @@ void handleSpeedControl() {
     int delayVal = server.arg("delay").toInt();
     if (delayVal >= 50 && delayVal <= 2000) {
       sequenceDelay = delayVal;
+      lastLanActivity = millis(); // Perbarui log aktivitas lokal
       server.send(200, "application/json", "{\"status\":\"ok\",\"sequenceDelay\":" + String(sequenceDelay) + "}");
     } else {
       server.send(400, "application/json", "{\"error\":\"Delay bounds are 50ms - 2000ms\"}");
@@ -174,6 +178,7 @@ void handleSequenceControl() {
       }
       Serial.print("⚡ LAN Action: Pola variasi diubah ke ");
       Serial.println(currentSequence);
+      lastLanActivity = millis(); // Perbarui log aktivitas lokal untuk mencegah overwrite delay
       server.send(200, "application/json", "{\"status\":\"ok\",\"sequence\":" + String(currentSequence) + "}");
     } else {
       server.send(400, "application/json", "{\"error\":\"Invalid mode\"}");
@@ -187,10 +192,14 @@ void loop() {
   server.handleClient(); // Tangani request dari browser secara instan (Direct LAN)
   
   if (WiFi.status() == WL_CONNECTED) {
-    // Sync status relay dengan Cloud Server setiap 1 detik
-    if (millis() - lastRelayCheck > relayCheckInterval) {
-      checkRelayStatus();
-      lastRelayCheck = millis();
+    // Sync status relay dengan Cloud Server
+    // Berikan jeda grace period jika baru saja ada aktivitas LAN lokal agar sinkronisasi tidak tabrakan (race condition)
+    if (millis() - lastLanActivity > 8000) {
+      unsigned long currentInterval = (currentSequence == 0) ? 5000 : 15000;
+      if (millis() - lastRelayCheck > currentInterval) {
+        checkRelayStatus();
+        lastRelayCheck = millis();
+      }
     }
     
     // Auto Sequence Logic (Pola Variasi Relay)
@@ -234,11 +243,13 @@ void allRelaysOff() {
 }
 
 void checkRelayStatus() {
+  WiFiClientSecure client;
+  client.setInsecure(); // Mengabaikan validasi rantai sertifikat SSL agar hemat memori & hemat CPU (super cepat!)
   HTTPClient http;
   String url = String(serverUrl) + "/api/relays";
   
-  http.begin(url);
-  http.setTimeout(1500); // Batasi waktu tunggu agar tidak membekukan Web Server lokal
+  http.begin(client, url);
+  http.setTimeout(1000); // Batasi waktu tunggu agar tidak membekukan Web Server lokal
   int httpCode = http.GET();
 
   if (httpCode == 200) {
@@ -301,11 +312,13 @@ void sendSensorData() {
     t = 0;
   }
 
+  WiFiClientSecure client;
+  client.setInsecure(); // Mengabaikan validasi rantai sertifikat SSL agar hemat memori & hemat CPU (super cepat!)
   HTTPClient http;
   String url = String(serverUrl) + "/api/update-sensor";
   
-  http.begin(url);
-  http.setTimeout(1500); // Batasi waktu tunggu agar tidak membekukan Web Server lokal
+  http.begin(client, url);
+  http.setTimeout(1200); // Batasi waktu tunggu agar tidak membekukan Web Server lokal
   http.addHeader("Content-Type", "application/json");
 
   String jsonPayload = "{\"temp\":" + String(t) + ",\"humidity\":" + String(h) + "}";

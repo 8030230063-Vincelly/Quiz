@@ -318,6 +318,17 @@ export default function App() {
   useEffect(() => {
     fetchData();
     fetchHistory();
+    
+    // Auto-setup Telegram Webhook dynamically when page loads (paling andal untuk Vercel Serverless)
+    fetch('/api/setup-webhook')
+      .then(res => res.json())
+      .then(data => {
+        console.log('🤖 [TELEGRAM] Setup Webhook:', data);
+      })
+      .catch(err => {
+        console.error('❌ [TELEGRAM] Setup Webhook Fail:', err);
+      });
+
     const interval = setInterval(fetchData, 3000);
     const clockInterval = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => {
