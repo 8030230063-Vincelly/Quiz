@@ -32,7 +32,8 @@ let iotState = {
   sequenceDelay: 200, // Speed delay in ms (lebih cepat, default 200ms)
   logs: [] as any[],
   telegramLogs: [] as any[],
-  botStatus: isBotConfigured ? 'online' : 'unconfigured'
+  botStatus: isBotConfigured ? 'online' : 'unconfigured',
+  activeChatId: null as number | null
 };
 
 // Initialize Telegram Bot
@@ -59,11 +60,17 @@ const formatTime = (date: Date | string) => {
 const processTelegramCommand = async (text: string, chat_id: number, username: string) => {
   const cleanText = text.toLowerCase().trim();
   
+  // Save active Chat ID dynamically so we can send alerts to the active chat
+  if (chat_id) {
+    iotState.activeChatId = chat_id;
+  }
+  
   // Catat log Telegram untuk ditampilkan di Web UI Dashboard
   iotState.telegramLogs.unshift({
     time: new Date(),
     user: username,
-    command: text
+    command: text,
+    chat_id: chat_id
   });
   if (iotState.telegramLogs.length > 50) iotState.telegramLogs.pop();
 
@@ -143,54 +150,66 @@ const processTelegramCommand = async (text: string, chat_id: number, username: s
 
 if (isBotConfigured && process.env.NODE_ENV !== 'test') {
   try {
-    // Only use webhook in the Vercel serverless environment.
-    // In local development or Cloud Run containers (AI Studio), use polling as it is highly stable and does not require a public URL.
-    const usePolling = !process.env.VERCEL;
-    
-    if (usePolling) {
-      // Do not auto-start polling on initialization to prevent conflict with any existing webhook
-      bot = new TelegramBot(BOT_TOKEN as string, { polling: false });
-      iotState.botStatus = 'online';
-      
-      // Delete any custom webhooks, then start polling to clear 409 Conflict errors
-      bot.deleteWebHook()
-        .then(() => {
-          console.log('ℹ️ [TELEGRAM] Webhook cleared. Starting local/container polling...');
-          return bot?.startPolling();
-        })
-        .then(() => {
-          console.log('🟢 [TELEGRAM] Polling successfully started.');
-        })
-        .catch((err) => {
-          console.error('[TELEGRAM] Error clearing webhook or starting polling:', err);
-        });
-        
-      // Handle polling error gracefully to avoid infinite loops
-      bot.on('polling_error', (error: any) => {
-        const errMsg = error.message || '';
-        if (errMsg.includes('409') || errMsg.includes('Conflict')) {
-          console.log('ℹ️ [TELEGRAM] Polling conflict: Active webhook detected. Temporarily stopping polling.');
-          bot?.stopPolling().catch(() => {});
+    // Initialize standard TelegramBot with polling configuration options
+    // but with autoStart: false so we do not initiate conflict errors on startup
+    // until we have checked webhook status or cleared any active webhooks.
+    bot = new TelegramBot(BOT_TOKEN as string, { polling: { autoStart: false } });
+    iotState.botStatus = 'online';
+
+    // Check if there is an active webhook on the Telegram server
+    bot.getWebHookInfo()
+      .then(async (info) => {
+        if (info && info.url && info.url !== '') {
+          console.log(`📡 [TELEGRAM] Active webhook found: ${info.url}. Skipping direct polling on startup.`);
+          iotState.botStatus = 'online (webhook)';
         } else {
-          console.error('[TELEGRAM] Polling Error:', error);
+          console.log('ℹ️ [TELEGRAM] No active webhook found. Safe to start polling.');
+          bot?.startPolling()
+            .then(() => {
+              console.log('🟢 [TELEGRAM] Polling started successfully.');
+              iotState.botStatus = 'online (polling)';
+            })
+            .catch(err => {
+              console.error('[TELEGRAM] Error starting polling:', err);
+            });
         }
+      })
+      .catch((err) => {
+        console.error('[TELEGRAM] Error checking webhook info, falling back to delete & poll:', err);
+        // Fallback: clear and poll immediately
+        bot?.deleteWebHook()
+          .then(() => bot?.startPolling())
+          .then(() => {
+            console.log('🟢 [TELEGRAM] Polling started after fallback.');
+            iotState.botStatus = 'online (polling)';
+          })
+          .catch(e => console.error('Fallback polling start failed:', e));
       });
 
-      bot.on('message', (msg) => {
-        if (msg.text) {
-          processTelegramCommand(
-            msg.text, 
-            msg.chat.id, 
-            msg.from?.username || msg.from?.first_name || 'Unknown'
-          ).catch((err) => console.error("Error processing dev bot message:", err));
-        }
-      });
-    } else {
-      bot = new TelegramBot(BOT_TOKEN as string, { polling: false });
-      iotState.botStatus = 'online';
-      console.log('ℹ️ [TELEGRAM] Serverless bot initialized. Webhook registration managed dynamically.');
-    }
+    // Handle polling error gracefully to avoid infinite loops or freeze
+    bot.on('polling_error', (error: any) => {
+      const errMsg = error.message || '';
+      if (errMsg.includes('409') || errMsg.includes('Conflict')) {
+        console.log('ℹ️ [TELEGRAM] Polling conflict: Active webhook detected. Stopping polling.');
+        bot?.stopPolling().catch(() => {});
+        iotState.botStatus = 'online (webhook)';
+      } else {
+        console.error('[TELEGRAM] Polling Error:', error);
+      }
+    });
+
+    // Listen for incoming messages from Telegram chats
+    bot.on('message', (msg) => {
+      if (msg.text) {
+        processTelegramCommand(
+          msg.text, 
+          msg.chat.id, 
+          msg.from?.username || msg.from?.first_name || 'Unknown'
+        ).catch((err) => console.error("Error processing dev bot message:", err));
+      }
+    });
   } catch (err) {
+    console.error('[TELEGRAM] Initialization error:', err);
     iotState.botStatus = 'error';
   }
 }
@@ -256,8 +275,9 @@ api.get('/relay/:id/:state', (req, res) => {
     iotState.relays[relayId] = isOn;
     addLog(`Relay ${id} turned ${state}`);
     
-    if (bot && CHAT_ID) {
-      bot.sendMessage(CHAT_ID, `Alert: Relay ${id} has been turned ${state}`);
+    const targetChatId = CHAT_ID || iotState.activeChatId;
+    if (bot && targetChatId) {
+      bot.sendMessage(targetChatId, `Alert: Relay ${id} has been turned ${state === 'on' ? 'ON 🟢' : 'OFF 🔴'}`).catch(() => {});
     }
   }
 
@@ -306,23 +326,24 @@ api.get('/setup-webhook', async (req, res) => {
   if (!bot) {
     return res.status(400).json({ status: 'error', message: 'Telegram bot not configured or token missing' });
   }
-  
-  const usePolling = !process.env.VERCEL;
-  if (usePolling) {
-    return res.json({ status: 'ok', message: 'Running on local/container container. Polling has been automatically enabled instead.' });
-  }
 
   try {
+    // If polling is currently active, stop it before switching to webhook mode
+    if (bot.isPolling()) {
+      console.log('ℹ️ [TELEGRAM] Active polling detected. Stopping polling for webhook transition...');
+      await bot.stopPolling().catch(() => {});
+    }
+
     const host = req.headers.host;
-    // Vercel endpoints run on HTTPS securely
+    // Determine proxy/original protocol, default to https for security of webhooks
     const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
     const webhookUrl = `${protocol}://${host}/api/telegram-webhook`;
     
-    console.log(`[TELEGRAM] Registering serverless webhook to ${webhookUrl}...`);
+    console.log(`📡 [TELEGRAM] Registering webhook endpoint to ${webhookUrl}...`);
     await bot.setWebHook(webhookUrl);
     
-    iotState.botStatus = 'online';
-    res.json({ status: 'ok', webhookUrl, message: 'Webhook registered successfully on serverless Vercel' });
+    iotState.botStatus = 'online (webhook)';
+    res.json({ status: 'ok', webhookUrl, message: 'Telegram Webhook registered successfully! Bot switched to Webhook mode.' });
   } catch (error: any) {
     console.error('[TELEGRAM] Webhook registration failed:', error);
     res.status(500).json({ status: 'error', message: error.message || 'Unknown error' });
