@@ -92,6 +92,7 @@ export default function App() {
   // Lock mechanism (per-relay and per-sequence) to prevent overwrite bouncing ("mati/hidup sendiri")
   const lastToggleTimeRef = useRef<Record<number, number>>({});
   const lastSequenceToggleTimeRef = useRef<number>(0);
+  const recognitionRef = useRef<any>(null);
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [selectedNode, setSelectedNode] = useState('esp32');
 
@@ -343,10 +344,32 @@ export default function App() {
     }
   };
 
+  const setSequenceDirect = async (mode: number) => {
+    lastSequenceToggleTimeRef.current = Date.now();
+    setSequenceMode(mode);
+
+    try {
+      const res = await fetch(`/api/sequence/${mode}`);
+      if (res.ok) {
+        addNotification(`Variasi: ${mode === 0 ? 'Mati' : mode === 1 ? 'Pola 1-2-3-4' : 'Pola 4-3-2-1'}`);
+      }
+    } catch (err) {
+      console.error('Sequence toggle error:', err);
+    }
+  };
+
   const startVoiceControl = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      addNotification("Voice Recognition not supported in this browser");
+      addNotification("Voice Recognition tidak didukung di browser ini!");
+      return;
+    }
+
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
       return;
     }
 
@@ -355,8 +378,24 @@ export default function App() {
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
+    recognition.onstart = () => {
+      setIsListening(true);
+      addNotification("Mulai mendengarkan perintah suara...");
+    };
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+    recognition.onerror = (event: any) => {
+      console.error("Speech Recognition Error:", event.error);
+      if (event.error === 'not-allowed') {
+        addNotification("Izin mikrofon ditolak! Pastikan situs berjalan di HTTPS.");
+      } else if (event.error === 'no-speech') {
+        addNotification("Tidak terdengar suara.");
+      } else {
+        addNotification(`Gagal mengenali suara: ${event.error}`);
+      }
+      setIsListening(false);
+    };
 
     recognition.onresult = (event: any) => {
       const transcript = event.results[0][0].transcript.toLowerCase();
@@ -364,36 +403,121 @@ export default function App() {
       handleVoiceCommand(transcript);
     };
 
+    recognitionRef.current = recognition;
     recognition.start();
   };
 
-  const handleVoiceCommand = (command: string) => {
-    addNotification(`Command: "${command}"`);
-    
-    // Relay Commands
-    const relayMatches = command.match(/lampu (\d+) (nyala|mati)/);
-    if (relayMatches) {
-      const id = parseInt(relayMatches[1]);
-      const action = relayMatches[2];
-      const currentState = relays[id];
-      if ((action === 'nyala' && !currentState) || (action === 'mati' && currentState)) {
-        toggleRelay(id);
+  const parseIndonesianNumber = (word: string): number | null => {
+    if (word === '1' || word.includes('satu')) return 1;
+    if (word === '2' || word.includes('dua')) return 2;
+    if (word === '3' || word.includes('tiga')) return 3;
+    if (word === '4' || word.includes('empat')) return 4;
+    return null;
+  };
+
+  const handleVoiceCommand = (rawCommand: string) => {
+    const command = rawCommand.toLowerCase().trim();
+    addNotification(`Suara terdengar: "${command}"`);
+
+    // 1. Control: semua relay (...) nyala / semua lampu (...) nyala
+    if (
+      command.includes('semua relay nyala') || 
+      command.includes('semua lampu nyala') ||
+      command.includes('semua relaynya nyala')
+    ) {
+      [1, 2, 3, 4].forEach(id => {
+        const currentState = relays[id];
+        if (!currentState) {
+          toggleRelay(id);
+        }
+      });
+      addNotification("Menghidupkan semua relay...");
+      return;
+    }
+
+    // Control: semua relay (...) mati / semua lampu (...) mati
+    if (
+      command.includes('semua relay mati') || 
+      command.includes('semua lampu mati') ||
+      command.includes('semua relaynya mati')
+    ) {
+      [1, 2, 3, 4].forEach(id => {
+        const currentState = relays[id];
+        if (currentState) {
+          toggleRelay(id);
+        }
+      });
+      addNotification("Mematikan semua relay...");
+      return;
+    }
+
+    // 2. Control: variasi 1/2 nyala/mati
+    const variasiMatch = command.match(/variasi\s+(1|satu|2|dua)\s+(nyala|mati)/);
+    if (variasiMatch) {
+      const varNumStr = variasiMatch[1];
+      const action = variasiMatch[2];
+      const mode = (varNumStr === '1' || varNumStr === 'satu') ? 1 : 2;
+
+      if (action === 'nyala') {
+        setSequenceDirect(mode);
+      } else {
+        setSequenceDirect(0);
       }
       return;
     }
 
-    // Sequence Commands
-    if (command.includes('variasi satu') || command.includes('variasi 1')) {
-      toggleSequence(1);
-    } else if (command.includes('variasi dua') || command.includes('variasi 2')) {
-      toggleSequence(2);
-    } else if (command.includes('berhenti variasi') || command.includes('matikan variasi')) {
-      toggleSequence(0);
-    } else if (command.includes('semua lampu nyala')) {
-      [1,2,3,4].forEach(id => { if(!relays[id]) toggleRelay(id); });
-    } else if (command.includes('semua lampu mati')) {
-      [1,2,3,4].forEach(id => { if(relays[id]) toggleRelay(id); });
+    // Fallback variasi direct checks
+    if (command.includes('variasi 1 nyala') || command.includes('variasi satu nyala')) {
+      setSequenceDirect(1);
+      return;
+    } else if (command.includes('variasi 1 mati') || command.includes('variasi satu mati')) {
+      setSequenceDirect(0);
+      return;
+    } else if (command.includes('variasi 2 nyala') || command.includes('variasi dua nyala')) {
+      setSequenceDirect(2);
+      return;
+    } else if (command.includes('variasi 2 mati') || command.includes('variasi dua mati')) {
+      setSequenceDirect(0);
+      return;
     }
+
+    // 3. Control: relay (...) nyala/mati ATAU lampu (...) nyala/mati
+    const relayMatch = command.match(/(relay|lampu)\s+(1|satu|2|dua|3|tiga|4|empat)\s+(nyala|mati)/);
+    if (relayMatch) {
+      const numWord = relayMatch[2];
+      const action = relayMatch[3];
+      const id = parseIndonesianNumber(numWord);
+
+      if (id !== null) {
+        const currentState = relays[id]; // true = ON, false = OFF
+        const targetState = action === 'nyala';
+        if (currentState !== targetState) {
+          toggleRelay(id);
+        } else {
+          addNotification(`Relay ${id} sudah ${action === 'nyala' ? 'YANG MENYALA' : 'MATI'}`);
+        }
+        return;
+      }
+    }
+
+    // Direct string detection as exact match helper backstop
+    let foundRelayCmd = false;
+    [1, 2, 3, 4].forEach(id => {
+      const idWords = id === 1 ? ['1', 'satu'] : id === 2 ? ['2', 'dua'] : id === 3 ? ['3', 'tiga'] : ['4', 'empat'];
+      idWords.forEach(word => {
+        if (command.includes(`relay ${word} nyala`) || command.includes(`lampu ${word} nyala`)) {
+          if (!relays[id]) toggleRelay(id);
+          foundRelayCmd = true;
+        } else if (command.includes(`relay ${word} mati`) || command.includes(`lampu ${word} mati`)) {
+          if (relays[id]) toggleRelay(id);
+          foundRelayCmd = true;
+        }
+      });
+    });
+
+    if (foundRelayCmd) return;
+
+    addNotification(`Perintah suara tidak dikenali: "${command}"`);
   };
 
   const addNotification = (text: string) => {
