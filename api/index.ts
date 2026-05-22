@@ -136,6 +136,18 @@ if (isBotConfigured && process.env.NODE_ENV !== 'test') {
           ).catch((err) => console.error("Error processing dev bot message:", err));
         }
       });
+    } else {
+      // Vercel or production: dynamically register the Telegram Webhook!
+      const vercelHost = process.env.VERCEL_URL;
+      if (vercelHost) {
+        const webhookUrl = vercelHost.startsWith('http') 
+          ? `${vercelHost}/api/telegram-webhook` 
+          : `https://${vercelHost}/api/telegram-webhook`;
+        
+        bot.setWebHook(webhookUrl)
+          .then(() => console.log(`[TELEGRAM] Webhook successfully registered to ${webhookUrl}`))
+          .catch((err) => console.error(`[TELEGRAM] Failed to set webhook to ${webhookUrl}:`, err));
+      }
     }
   } catch (err) {
     iotState.botStatus = 'error';
@@ -271,6 +283,7 @@ api.get('/', (req, res) => {
 
 // API mounting
 app.use('/api', api);
+app.use('/', api);
 
 // Production: Serve static files from root
 if (process.env.NODE_ENV === 'production') {

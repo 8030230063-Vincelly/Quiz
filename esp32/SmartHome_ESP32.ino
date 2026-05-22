@@ -4,41 +4,59 @@
 #include <ArduinoJson.h>
 #include "DHT.h"
 
-// --- KONFIGURASI WIFI ---
-const char* ssid = "NAMA_WIFI_ANDA";
-const char* password = "PASSWORD_WIFI_ANDA";
+// ==========================================
+// 📶 KONFIGURASI WIFI & JARINGAN
+// ==========================================
+const char* ssid = "Kocakk";
+const char* password = "11223344";
 
-// --- KONFIGURASI BACKEND ---
-// Ganti dengan URL Vercel Anda (Sesuai Dashboard Vercel)
-const char* serverUrl = "https://quiz-umber-rho.vercel.app";
+// ==========================================
+// ☁️ KONFIGURASI BACKEND CLOUD
+// ==========================================
+// Ganti dengan URL server backend Anda saat ini agar Web Dashboard & Bot Telegram sinkron!
+// URL Cloud Anda: https://ais-pre-tt5eohrymap33mccj2v5op-817384740536.asia-east1.run.app
+const char* serverUrl = "https://ais-pre-tt5eohrymap33mccj2v5op-817384740536.asia-east1.run.app";
 
-// --- KONFIGURASI PIN ---
+// ==========================================
+// 🤖 KONFIGURASI TELEGRAM BOT (OPSIONAL / DIRECT)
+// ==========================================
+// Catatan Arsitektur:
+// Perintah bot Anda saat ini diproses secara instan dan andal oleh server Node.js (Vercel/Cloud).
+// Ini adalah metode TERBAIK & paling kencang karena tidak membebani ESP32 dengan koneksi SSL Telegram yang berat.
+// Namun, jika Anda ingin menyimpannya di sini sebagai dokumentasi/referensi, Anda bisa mengisinya:
+const char* botToken = "YOUR_TELEGRAM_BOT_TOKEN";
+const char* chatID = "YOUR_TELEGRAM_CHAT_ID";
+
+// ==========================================
+// 📌 KONFIGURASI PIN OUT (Sesuai Board Anda)
+// ==========================================
 #define DHTPIN 4
-#define DHTTYPE DHT11 // GANTI ke DHT22 jika sensor Anda berwarna Putih
+#define DHTTYPE DHT11 // Ganti ke DHT22 jika sensor Anda berwarna putih
 
-#define RELAY1_PIN 12
-#define RELAY2_PIN 13
-#define RELAY3_PIN 14
-#define RELAY4_PIN 27
+#define RELAY1_PIN 5
+#define RELAY2_PIN 19
+#define RELAY3_PIN 18
+#define RELAY4_PIN 23
 
 DHT dht(DHTPIN, DHTTYPE);
-
 WebServer server(80);
 
-// Prototipe Fungsi WebServer untuk compiler C++
+// Prototipe Fungsi WebServer
 void handleStatus();
 void handleRelayControl();
 void handleSpeedControl();
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("\n===== ESP32 SMART HOME SYSTEM STARTING =====");
 
+  // Set Relay Pin sebagai OUTPUT
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   pinMode(RELAY3_PIN, OUTPUT);
   pinMode(RELAY4_PIN, OUTPUT);
 
-  // Matikan semua relay di awal (Active Low/High menyesuaikan module)
+  // Inisialisasi awal: Matikan semua relay (Active Low: HIGH = OFF)
   digitalWrite(RELAY1_PIN, HIGH); 
   digitalWrite(RELAY2_PIN, HIGH);
   digitalWrite(RELAY3_PIN, HIGH);
@@ -47,48 +65,42 @@ void setup() {
   dht.begin();
   initWiFi();
 
-  // Registrasi Endpoint WebServer Lokal
+  // Registrasi Endpoint WebServer Lokal (Untuk LAN Direct Control)
   server.on("/api/status", handleStatus);
   server.on("/api/relay", handleRelayControl);
   server.on("/api/speed", handleSpeedControl);
+  
+  // Custom CORS Header Handling
+  server.enableCORS(true);
   server.begin();
-  Serial.println("Local HTTP WebServer started on port 80!");
+  Serial.println("🌐 [LAN LOCAL] HTTP WebServer berjalan di Port 80!");
 }
 
 void initWiFi() {
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
+  Serial.print("📶 Menghubungkan ke WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi");
-  Serial.print("IP Address ESP32: ");
-  Serial.println(WiFi.localIP()); // Cetak IP agar user gampang salin ke web dashboard
+  Serial.println("\n🟢 WiFi Terhubung!");
+  Serial.print("📌 IP Address ESP32: ");
+  Serial.println(WiFi.localIP()); 
 }
 
 unsigned long lastUpdate = 0;
 const int updateInterval = 10000; // Kirim data sensor setiap 10 detik
 
 unsigned long lastRelayCheck = 0;
-const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik
+const int relayCheckInterval = 1000; // Cek status relay setiap 1 detik untuk sync cloud
 
 int currentSequence = 0;
 unsigned long lastSeqStep = 0;
 int seqStep = 0;
-int sequenceDelay = 200; // default interval 200ms (lebih cepat dibanding sebelumnya yang 500ms)
+int sequenceDelay = 200; // Delay pola variasi relay (ms)
 
 // Handler untuk memberikan status pembacaan sensor dan relay langsung via LAN (CORS-enabled)
 void handleStatus() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "*");
-  
-  if (server.method() == HTTP_OPTIONS) {
-    server.send(204);
-    return;
-  }
-
   float h = dht.readHumidity();
   float t = dht.readTemperature();
   if (isnan(h) || isnan(t)) { h = 0; t = 0; }
@@ -100,7 +112,7 @@ void handleStatus() {
   doc["sequenceDelay"] = sequenceDelay;
   
   JsonObject rs = doc.createNestedObject("relays");
-  // Karena relay active-low, LOW berarti relay menyala (ON = true)
+  // Active Low: LOW = Menyala (ON = true), HIGH = Mati (OFF = false)
   rs["1"] = (digitalRead(RELAY1_PIN) == LOW);
   rs["2"] = (digitalRead(RELAY2_PIN) == LOW);
   rs["3"] = (digitalRead(RELAY3_PIN) == LOW);
@@ -113,15 +125,6 @@ void handleStatus() {
 
 // Handler untuk kontrol relay instan dari web dashboard lokal (CORS-enabled)
 void handleRelayControl() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "*");
-
-  if (server.method() == HTTP_OPTIONS) {
-    server.send(204);
-    return;
-  }
-
   if (server.hasArg("id") && server.hasArg("state")) {
     int id = server.arg("id").toInt();
     String state = server.arg("state");
@@ -132,6 +135,10 @@ void handleRelayControl() {
     else if (id == 3) digitalWrite(RELAY3_PIN, pinValue);
     else if (id == 4) digitalWrite(RELAY4_PIN, pinValue);
 
+    Serial.print("⚡ LAN Action: Relay ");
+    Serial.print(id);
+    Serial.println(pinValue == LOW ? " dinyalakan (ON)" : " dimatikan (OFF)");
+
     server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Relay updated directly via LAN\"}");
   } else {
     server.send(400, "application/json", "{\"error\":\"Missing arguments id or state\"}");
@@ -140,15 +147,6 @@ void handleRelayControl() {
 
 // Handler untuk kontrol kecepatan variasi instan dari web dashboard lokal (CORS-enabled)
 void handleSpeedControl() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "*");
-
-  if (server.method() == HTTP_OPTIONS) {
-    server.send(204);
-    return;
-  }
-
   if (server.hasArg("delay")) {
     int delayVal = server.arg("delay").toInt();
     if (delayVal >= 50 && delayVal <= 2000) {
@@ -163,16 +161,17 @@ void handleSpeedControl() {
 }
 
 void loop() {
-  server.handleClient(); // Tangani request dari browser secara instan
+  server.handleClient(); // Tangani request dari browser secara instan (Direct LAN)
+  
   if (WiFi.status() == WL_CONNECTED) {
-    // Cek status relay setiap 1 detik untuk kestabilan
+    // Sync status relay dengan Cloud Server setiap 1 detik
     if (millis() - lastRelayCheck > relayCheckInterval) {
       checkRelayStatus();
       lastRelayCheck = millis();
     }
     
-    // Handle Sequence Logic
-    if (currentSequence == 1) { // 1-2-3-4
+    // Auto Sequence Logic (Pola Variasi Relay)
+    if (currentSequence == 1) { // Pola 1-2-3-4
       if (millis() - lastSeqStep > sequenceDelay) {
         allRelaysOff();
         if (seqStep == 0) digitalWrite(RELAY1_PIN, LOW);
@@ -182,7 +181,7 @@ void loop() {
         seqStep = (seqStep + 1) % 4;
         lastSeqStep = millis();
       }
-    } else if (currentSequence == 2) { // 4-3-2-1
+    } else if (currentSequence == 2) { // Pola 4-3-2-1
       if (millis() - lastSeqStep > sequenceDelay) {
         allRelaysOff();
         if (seqStep == 0) digitalWrite(RELAY4_PIN, LOW);
@@ -194,7 +193,7 @@ void loop() {
       }
     }
 
-    // Kirim data sensor setiap 10 detik
+    // Kirim data sensor ke Cloud Server setiap 10 detik
     if (millis() - lastUpdate > updateInterval) {
       sendSensorData();
       lastUpdate = millis();
@@ -232,8 +231,10 @@ void checkRelayStatus() {
     if (newSeq != currentSequence) {
       currentSequence = newSeq;
       seqStep = 0;
+      Serial.print("🔄 Pola variasi berubah ke: Pola ");
+      Serial.println(currentSequence);
       if (currentSequence == 0) {
-        // Reset to normal relay state if sequence stopped
+        // Reset ke status normal relay jika variasi dihentikan
         JsonObject rs = doc["relays"];
         digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
         digitalWrite(RELAY2_PIN, rs["2"] ? LOW : HIGH);
@@ -242,13 +243,25 @@ void checkRelayStatus() {
       }
     }
 
-    // Only update relays normally if no sequence is running
+    // Hanya update status relay jika TIDAK ADA pola variasi berjalan
     if (currentSequence == 0) {
       JsonObject rs = doc["relays"];
       digitalWrite(RELAY1_PIN, rs["1"] ? LOW : HIGH);
       digitalWrite(RELAY2_PIN, rs["2"] ? LOW : HIGH);
       digitalWrite(RELAY3_PIN, rs["3"] ? LOW : HIGH);
       digitalWrite(RELAY4_PIN, rs["4"] ? LOW : HIGH);
+    }
+  } else {
+    if (httpCode == 404) {
+      static bool warnedRelay = false;
+      if (!warnedRelay) {
+        Serial.println("ℹ️ [CLOUDSYNC] HTTP 404: Server Cloud AI Studio terproteksi keamanan sandbox.");
+        Serial.println("👉 Ini NORMAL di AI Studio Dev. Aktifkan 'Mode Direct IP' & isi IP ESP32 di Web Dashboard Anda untuk kontrol lokal 0ms!");
+        warnedRelay = true;
+      }
+    } else {
+      Serial.print("⚠️ [CLOUDSYNC] Gagal mengambil status. Error: ");
+      Serial.println(httpCode);
     }
   }
   http.end();
@@ -258,9 +271,8 @@ void sendSensorData() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
-  // Biar heartbeat tetep jalan walau DHT error (tulis 0)
   if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor! Heartbeat only.");
+    Serial.println("❌ Gagal membaca sensor DHT11!");
     h = 0;
     t = 0;
   }
@@ -274,5 +286,17 @@ void sendSensorData() {
   String jsonPayload = "{\"temp\":" + String(t) + ",\"humidity\":" + String(h) + "}";
   
   int httpCode = http.POST(jsonPayload);
+  if (httpCode == 404) {
+    static bool warnedSensor = false;
+    if (!warnedSensor) {
+      Serial.println("ℹ️ [DHT11] HTTP 404: Cloud terproteksi keamanan sandbox. Data sensor akan dibaca langsung oleh Web Browser (Direct IP Mode).");
+      warnedSensor = true;
+    }
+  } else if (httpCode != 200) {
+    Serial.print("⚠️ Gagal mengirim data sensor. HTTP Code: ");
+    Serial.println(httpCode);
+  } else {
+    Serial.println("🚀 Data sensor berhasil dikirim ke Cloud Server!");
+  }
   http.end();
 }
