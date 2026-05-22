@@ -328,11 +328,45 @@ api.get('/setup-webhook', async (req, res) => {
   }
 
   try {
-    let host = req.headers.host || "";
+    let host = (req.headers['x-forwarded-host'] as string) || req.headers.host || "";
     // Remove any port specification (like :3000 or :5173) to ensure it uses the standard HTTPS port (443) which Telegram webhooks strictly restrict to (80, 88, 443, 8443)
     if (host.includes(":")) {
       host = host.split(":")[0];
     }
+    
+    // Fallback: Check Referer header if the host resolved to a local IP/local address
+    const referer = req.headers.referer;
+    if ((host === '127.0.0.1' || host === 'localhost' || host === '::1' || !host) && referer) {
+      try {
+        const refUrl = new URL(referer);
+        if (refUrl.hostname && refUrl.hostname !== 'localhost' && refUrl.hostname !== '127.0.0.1' && refUrl.hostname !== '::1') {
+          host = refUrl.hostname;
+          console.log(`📡 [TELEGRAM] Extracted public host from Referer: ${host}`);
+        }
+      } catch (err) {
+        console.warn('⚠️ [TELEGRAM] Referer parsing failed:', err);
+      }
+    }
+
+    // Check if resolved host is a local/invalid IP address for Webhooks
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || !host) {
+      console.log('ℹ️ [TELEGRAM] Webhook requires a public domain. Local environment detected. Switching to secure Polling mode...');
+      
+      // Stop webhook if any exists
+      await bot.deleteWebHook().catch(() => {});
+      
+      // Start polling
+      if (!bot.isPolling()) {
+        await bot.startPolling().catch((e) => console.log('Polling start:', e));
+      }
+      
+      iotState.botStatus = 'online (polling)';
+      return res.json({ 
+        status: 'ok', 
+        message: 'Local IP/Host detected. Telegram Webhook setup was bypassed, and Polling mode was activated successfully instead!' 
+      });
+    }
+
     const webhookUrl = `https://${host}/api/telegram-webhook`;
     
     console.log(`📡 [TELEGRAM] Verifying webhook registration parameters... Target: ${webhookUrl}`);
